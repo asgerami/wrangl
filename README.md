@@ -54,10 +54,32 @@ mcpify generate --spec <url|file> [options]
   -t, --transport <type>  stdio | http              (default: stdio)
   -p, --port <number>     Port for the http transport (default: 3000)
   -a, --auth <scheme=value>   Inject a credential for a security scheme (repeatable)
+  -e, --enrich            Run the LLM semantic-enrichment pass (needs ANTHROPIC_API_KEY)
+  -m, --model <id>        Claude model for enrichment (default: claude-opus-4-8)
+  --effort <level>        Enrichment reasoning effort: low | medium | high (default: low)
 
-mcpify inspect --spec <url|file> [--json]
+mcpify inspect --spec <url|file> [--json] [--enrich]
   Parse a spec and print the generated tools without serving.
 ```
+
+### Semantic enrichment (LLM pass)
+
+The structural generator maps endpoints to tools deterministically — names come
+out raw (`post_v1_contacts`). The optional `--enrich` pass sends those stubs to
+Claude and rewrites them into names and descriptions an agent selects correctly
+(`create_contact`, with a real description and per-parameter explanations). It
+uses **structured outputs** so the model returns validated JSON, processes tools
+in batches, and only ever improves a tool — anything the model omits falls
+through to the deterministic original.
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+mcpify inspect  --spec examples/jsonplaceholder.yaml --enrich
+mcpify generate --spec examples/jsonplaceholder.yaml --enrich --model claude-sonnet-4-6
+```
+
+Defaults to `claude-opus-4-8`; pass `--model claude-sonnet-4-6` to match the
+model named in the product spec. Honors `ANTHROPIC_BASE_URL` for gateways.
 
 ### Connecting from Claude Desktop
 
@@ -138,6 +160,7 @@ src/
   parser/openapi.ts     Ingestion: load, validate, normalize a spec
   generator/tools.ts    Map endpoints → MCP tool definitions
   generator/schema.ts   JSON Schema → Zod input shapes
+  generator/enrich.ts   LLM semantic-enrichment pass (Claude, structured output)
   runtime/auth.ts       Credential resolution + auth injection
   runtime/proxy.ts      Build & execute the upstream HTTP request
   runtime/server.ts     Assemble a live McpServer from a spec
@@ -151,5 +174,6 @@ test/                   Unit, network, and e2e tests
 
 This engine is MVP scope. Not yet built here: hosted multi-tenant deployment,
 the dashboard/control plane, persistent usage logs, OAuth2 authorization-code
-flow, the LLM semantic-enrichment pass, spec auto-discovery, and live spec sync.
-The code is structured so each of these layers on top of the existing pipeline.
+flow, spec auto-discovery, and live spec sync. The code is structured so each of
+these layers on top of the existing pipeline. The LLM semantic-enrichment pass
+(`--enrich`) is implemented — see above.
