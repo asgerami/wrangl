@@ -1,0 +1,43 @@
+{
+  "name": "mcpify",
+  "version": "0.1.0",
+  "description": "Turn any REST API into an agent-ready MCP server in minutes.",
+  "type": "module",
+  "bin": {
+    "mcpify": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js",
+    "test": "node --test --import tsx ./test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "openapi",
+    "ai-agents",
+    "rest-api"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@apidevtools/swagger-parser": "^12.1.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "commander": "^15.0.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3"
+  }
+}
