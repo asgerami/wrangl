@@ -3,6 +3,7 @@ import { ingest } from "../parser/openapi.js";
 import { diffTools, type SpecDiff } from "../generator/diff.js";
 import { LogStore, type LogQuery, type LogRow } from "../runtime/logstore.js";
 import { loadCredentialsFromEnv, type CredentialStore } from "../runtime/auth.js";
+import { ServerStore, type ServerRecord } from "./store.js";
 import type { GeneratedServer, ToolDef } from "../types.js";
 
 /**
@@ -50,26 +51,82 @@ export interface ServerSummary {
 export interface RegistryOptions {
   /** Shared usage-log store; when omitted, calls aren't persisted. */
   logStore?: LogStore;
+  /** Durable store for server records; when omitted, the registry is in-memory. */
+  serverStore?: ServerStore;
 }
 
 export class ServerRegistry {
   private entries = new Map<string, ServerEntry>();
   private logStore?: LogStore;
+  private serverStore?: ServerStore;
 
   constructor(opts: RegistryOptions = {}) {
     this.logStore = opts.logStore;
+    this.serverStore = opts.serverStore;
   }
 
   async create(input: CreateServerInput): Promise<ServerEntry> {
+    const entry = await this.buildEntry({
+      spec: input.spec,
+      name: input.name,
+      baseUrl: input.baseUrl,
+      createdAt: Date.now(),
+      auth: input.auth,
+    });
+    this.entries.set(entry.slug, entry);
+    this.serverStore?.upsert(toRecord(entry));
+    return entry;
+  }
+
+  /**
+   * Rehydrate persisted servers on boot: re-ingest each record's spec and
+   * rebuild its entry (credentials re-derived from the environment). Servers
+   * whose spec can't be re-ingested are skipped and reported, not dropped from
+   * the store, so a transient failure doesn't lose them. Returns load results.
+   */
+  async load(): Promise<{ restored: number; failed: Array<{ id: string; error: string }> }> {
+    if (!this.serverStore) return { restored: 0, failed: [] };
+    const failed: Array<{ id: string; error: string }> = [];
+    let restored = 0;
+    for (const record of this.serverStore.all()) {
+      try {
+        const entry = await this.buildEntry({
+          spec: record.specSource,
+          name: record.name,
+          baseUrl: record.baseUrl,
+          slug: record.slug,
+          createdAt: record.createdAt,
+        });
+        this.entries.set(entry.slug, entry);
+        restored++;
+      } catch (err) {
+        failed.push({ id: record.id, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return { restored, failed };
+  }
+
+  /**
+   * Build a server entry from a spec; shared by create() and load(). When
+   * `slug` is omitted (create), a unique slug is derived from the resolved
+   * name; when provided (load), the persisted slug is reused as-is.
+   */
+  private async buildEntry(input: {
+    spec: string;
+    name?: string;
+    baseUrl?: string;
+    slug?: string;
+    createdAt: number;
+    auth?: CredentialStore;
+  }): Promise<ServerEntry> {
     const generated = await ingest(input.spec, { baseUrl: input.baseUrl });
     const name = input.name ?? generated.name;
-    const slug = this.uniqueSlug(name);
+    const slug = input.slug ?? this.uniqueSlug(name);
     const creds: CredentialStore = {
       ...loadCredentialsFromEnv(generated.securitySchemes),
       ...input.auth,
     };
-
-    const entry: ServerEntry = {
+    return {
       id: slug,
       name,
       slug,
@@ -77,12 +134,10 @@ export class ServerRegistry {
       baseUrl: generated.baseUrl,
       specHash: hashSpec(generated),
       status: "live",
-      createdAt: Date.now(),
+      createdAt: input.createdAt,
       generated,
       creds,
     };
-    this.entries.set(slug, entry);
-    return entry;
   }
 
   list(): ServerSummary[] {
@@ -106,6 +161,7 @@ export class ServerRegistry {
     entry.generated = next;
     entry.baseUrl = next.baseUrl;
     entry.specHash = hashSpec(next);
+    this.serverStore?.upsert(toRecord(entry));
     return diff;
   }
 
@@ -118,7 +174,9 @@ export class ServerRegistry {
   }
 
   remove(id: string): boolean {
-    return this.entries.delete(id);
+    const existed = this.entries.delete(id);
+    if (existed) this.serverStore?.delete(id);
+    return existed;
   }
 
   logs(id: string, query: Omit<LogQuery, "server"> = {}): LogRow[] | undefined {
@@ -152,6 +210,17 @@ export function toSummary(entry: ServerEntry): ServerSummary {
     status: entry.status,
     createdAt: entry.createdAt,
     specHash: entry.specHash,
+  };
+}
+
+function toRecord(entry: ServerEntry): ServerRecord {
+  return {
+    id: entry.id,
+    name: entry.name,
+    slug: entry.slug,
+    specSource: entry.specSource,
+    baseUrl: entry.baseUrl,
+    createdAt: entry.createdAt,
   };
 }
 
