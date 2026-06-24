@@ -38,6 +38,12 @@ const SCHEMA = `
     base_url    TEXT NOT NULL,
     created_at  INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS credentials (
+    server_id   TEXT NOT NULL,
+    scheme      TEXT NOT NULL,
+    value_enc   TEXT NOT NULL,
+    PRIMARY KEY (server_id, scheme)
+  );
 `;
 
 export class ServerStore {
@@ -87,6 +93,27 @@ export class ServerStore {
 
   delete(id: string): void {
     this.db.prepare(`DELETE FROM servers WHERE id = ?`).run(id);
+    this.db.prepare(`DELETE FROM credentials WHERE server_id = ?`).run(id);
+  }
+
+  /** Store an already-encrypted credential envelope for a server scheme. */
+  setCredential(serverId: string, scheme: string, valueEnc: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO credentials (server_id, scheme, value_enc) VALUES (?, ?, ?)
+         ON CONFLICT(server_id, scheme) DO UPDATE SET value_enc = excluded.value_enc`,
+      )
+      .run(serverId, scheme, valueEnc);
+  }
+
+  /** All encrypted credentials for a server, keyed by scheme. */
+  credentialsFor(serverId: string): Record<string, string> {
+    const rows = this.db
+      .prepare(`SELECT scheme, value_enc FROM credentials WHERE server_id = ?`)
+      .all(serverId) as unknown as Array<{ scheme: string; value_enc: string }>;
+    const out: Record<string, string> = {};
+    for (const r of rows) out[r.scheme] = r.value_enc;
+    return out;
   }
 
   close(): void {
