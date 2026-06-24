@@ -69,6 +69,11 @@ mcpify generate --spec <url|file> [options]
 mcpify inspect --spec <url|file> [--json] [--enrich]
   Parse a spec and print the generated tools without serving.
 
+mcpify serve [options]            # control-plane API hosting many MCP servers
+  -p, --port <number>     Port to listen on (default 4000)
+  -H, --host <host>       Host to bind (default 127.0.0.1)
+  -l, --log-db [path]     Usage-log SQLite file (default .mcpify/logs.db)
+
 mcpify logs [options]
   -d, --db [path]         Log database path (default .mcpify/logs.db)
   --server <name>         Filter by server name
@@ -143,6 +148,38 @@ mcpify generate --spec ./api.yaml --watch 30
 Polling needs no inbound connectivity; a webhook trigger would call the same
 reload path. The diff engine and `createReloadableServer` / `watchSpec` are
 exported for programmatic use.
+
+### Hosted control plane
+
+`mcpify serve` starts a Fastify REST API that manages **many** generated servers
+at once and hosts each as a live MCP endpoint at `/servers/:id/mcp` (Streamable
+HTTP) — the backend a dashboard and the CLI both talk to.
+
+```bash
+mcpify serve --port 4000
+
+# Create a server from a spec; agents connect to the returned mcpPath
+curl -X POST localhost:4000/servers \
+  -H 'content-type: application/json' \
+  -d '{"spec":"https://petstore3.swagger.io/api/v3/openapi.json","name":"Petstore"}'
+# → { "slug":"petstore", "toolCount":19, "mcpPath":"/servers/petstore/mcp", ... }
+```
+
+| Method & path | Purpose |
+|---|---|
+| `POST /servers` | Create a server from a spec (`{spec, name?, baseUrl?, auth?}`) |
+| `GET /servers` | List servers |
+| `GET /servers/:id` | Server details |
+| `GET /servers/:id/tools` | Generated tools |
+| `GET /servers/:id/logs` | Usage logs (`?tool=&status=&limit=`) |
+| `POST /servers/:id/regenerate` | Re-ingest the spec and diff the tools |
+| `POST /servers/:id/credentials` | Set a credential (`{scheme, value}`) |
+| `DELETE /servers/:id` | Remove a server |
+| `ALL /servers/:id/mcp` | The hosted MCP endpoint agents connect to |
+
+Server records are in-memory for now (durable storage is a follow-up); usage
+logs persist to SQLite. `ServerRegistry` and `buildControlPlane` are exported
+for embedding.
 
 ### Connecting from Claude Desktop
 
@@ -232,7 +269,9 @@ src/
   runtime/server.ts     Assemble a live (reloadable) McpServer from a spec
   runtime/watch.ts      Poll a spec and fire on change (live sync)
   runtime/transport.ts  stdio + Streamable HTTP transports
-  cli.ts                `mcpify generate` / `inspect` / `logs`
+  controlplane/registry.ts  In-process registry of generated servers
+  controlplane/api.ts       Fastify REST API + hosted MCP endpoints
+  cli.ts                `mcpify generate` / `inspect` / `logs` / `serve`
 examples/               Sample specs to try
 test/                   Unit, network, and e2e tests
 ```
@@ -242,8 +281,9 @@ test/                   Unit, network, and e2e tests
 This engine is MVP scope. Implemented: OpenAPI **and** Postman ingestion, the
 LLM semantic-enrichment pass (`--enrich`), `style`/`explode` parameter
 serialization, response `outputSchema` / `structuredContent`, persistent SQLite
-usage logs (`--log-db` + `mcpify logs`), and live spec sync (`--watch`:
-re-ingest, diff, and hot-reload tools without dropping connections). Not yet
-built here: hosted multi-tenant deployment, the dashboard/control plane, OAuth2
-authorization-code flow, and spec auto-discovery. The code is structured so each
-of these layers on top of the existing pipeline.
+usage logs (`--log-db` + `mcpify logs`), live spec sync (`--watch`: re-ingest,
+diff, and hot-reload tools without dropping connections), and a control-plane
+REST API (`mcpify serve`) that hosts many servers and their MCP endpoints. Not
+yet built here: the dashboard UI, durable server records / multi-tenant
+deployment, OAuth2 authorization-code flow, and spec auto-discovery. The code is
+structured so each of these layers on top of the existing pipeline.
