@@ -177,9 +177,17 @@ curl -X POST localhost:4000/servers \
 | `DELETE /servers/:id` | Remove a server |
 | `ALL /servers/:id/mcp` | The hosted MCP endpoint agents connect to |
 
-Server records are in-memory for now (durable storage is a follow-up); usage
-logs persist to SQLite. `ServerRegistry` and `buildControlPlane` are exported
-for embedding.
+Server records **persist to SQLite** — on restart, `mcpify serve` rehydrates
+each server by re-ingesting its spec, so your servers survive a reboot:
+
+```
+→ restored 3 server(s) from .mcpify/logs.db
+MCPify control plane on http://127.0.0.1:4000
+```
+
+Credentials are **not** persisted (they're re-derived from the environment on
+boot); encrypting them at rest is the next step. `ServerRegistry`,
+`ServerStore`, and `buildControlPlane` are exported for embedding.
 
 ### Connecting from Claude Desktop
 
@@ -269,7 +277,8 @@ src/
   runtime/server.ts     Assemble a live (reloadable) McpServer from a spec
   runtime/watch.ts      Poll a spec and fire on change (live sync)
   runtime/transport.ts  stdio + Streamable HTTP transports
-  controlplane/registry.ts  In-process registry of generated servers
+  controlplane/registry.ts  Registry of generated servers (+ rehydrate)
+  controlplane/store.ts     Durable server records (SQLite)
   controlplane/api.ts       Fastify REST API + hosted MCP endpoints
   cli.ts                `mcpify generate` / `inspect` / `logs` / `serve`
 examples/               Sample specs to try
@@ -283,7 +292,8 @@ LLM semantic-enrichment pass (`--enrich`), `style`/`explode` parameter
 serialization, response `outputSchema` / `structuredContent`, persistent SQLite
 usage logs (`--log-db` + `mcpify logs`), live spec sync (`--watch`: re-ingest,
 diff, and hot-reload tools without dropping connections), and a control-plane
-REST API (`mcpify serve`) that hosts many servers and their MCP endpoints. Not
-yet built here: the dashboard UI, durable server records / multi-tenant
-deployment, OAuth2 authorization-code flow, and spec auto-discovery. The code is
-structured so each of these layers on top of the existing pipeline.
+REST API (`mcpify serve`) that hosts many servers and their MCP endpoints, with
+**durable server records** (servers survive a restart). Not yet built here: the
+dashboard UI, credential encryption at rest, multi-tenant deployment, OAuth2
+authorization-code flow, and spec auto-discovery. The code is structured so each
+of these layers on top of the existing pipeline.
