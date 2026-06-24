@@ -185,9 +185,19 @@ each server by re-ingesting its spec, so your servers survive a reboot:
 MCPify control plane on http://127.0.0.1:4000
 ```
 
-Credentials are **not** persisted (they're re-derived from the environment on
-boot); encrypting them at rest is the next step. `ServerRegistry`,
-`ServerStore`, and `buildControlPlane` are exported for embedding.
+Credentials set via the API are **encrypted at rest** (AES-256-GCM) when
+`MCPIFY_SECRET_KEY` is set, and decrypted into memory only at proxy time — so
+they survive a restart without ever hitting disk in plaintext:
+
+```bash
+export MCPIFY_SECRET_KEY="$(openssl rand -hex 32)"   # 32-byte hex/base64, or a passphrase
+mcpify serve
+# → credential encryption enabled (MCPIFY_SECRET_KEY)
+```
+
+Without the key, credentials stay in memory only (and don't survive a restart).
+`ServerRegistry`, `ServerStore`, `Vault`, and `buildControlPlane` are exported
+for embedding.
 
 ### Connecting from Claude Desktop
 
@@ -278,7 +288,8 @@ src/
   runtime/watch.ts      Poll a spec and fire on change (live sync)
   runtime/transport.ts  stdio + Streamable HTTP transports
   controlplane/registry.ts  Registry of generated servers (+ rehydrate)
-  controlplane/store.ts     Durable server records (SQLite)
+  controlplane/store.ts     Durable server records + creds (SQLite)
+  controlplane/vault.ts     AES-256-GCM credential encryption
   controlplane/api.ts       Fastify REST API + hosted MCP endpoints
   cli.ts                `mcpify generate` / `inspect` / `logs` / `serve`
 examples/               Sample specs to try
@@ -293,7 +304,8 @@ serialization, response `outputSchema` / `structuredContent`, persistent SQLite
 usage logs (`--log-db` + `mcpify logs`), live spec sync (`--watch`: re-ingest,
 diff, and hot-reload tools without dropping connections), and a control-plane
 REST API (`mcpify serve`) that hosts many servers and their MCP endpoints, with
-**durable server records** (servers survive a restart). Not yet built here: the
-dashboard UI, credential encryption at rest, multi-tenant deployment, OAuth2
-authorization-code flow, and spec auto-discovery. The code is structured so each
-of these layers on top of the existing pipeline.
+**durable server records** (servers survive a restart), and **credential
+encryption at rest** (AES-256-GCM via `MCPIFY_SECRET_KEY`). Not yet built here:
+the dashboard UI, multi-tenant deployment, OAuth2 authorization-code flow, and
+spec auto-discovery. The code is structured so each of these layers on top of
+the existing pipeline.
