@@ -16,6 +16,19 @@ export interface RequestLog {
   statusCode?: number;
   latencyMs: number;
   error?: string;
+  /** JSON of the tool arguments (never contains injected credentials). */
+  requestBody?: string;
+  /** Upstream response body, truncated for storage. */
+  responseBody?: string;
+}
+
+/** Cap stored payloads so the log store doesn't balloon on large responses. */
+const MAX_PAYLOAD_CHARS = 8192;
+
+function truncate(text: string): string {
+  return text.length > MAX_PAYLOAD_CHARS
+    ? `${text.slice(0, MAX_PAYLOAD_CHARS)}… [truncated ${text.length - MAX_PAYLOAD_CHARS} chars]`
+    : text;
 }
 
 export interface ProxyResult {
@@ -62,6 +75,8 @@ export async function executeTool(
       url: redactUrl(built.url),
       statusCode: response.status,
       latencyMs: Math.round(performance.now() - start),
+      requestBody: truncate(JSON.stringify(args)),
+      responseBody: truncate(body),
     });
     return result;
   } catch (err) {
@@ -72,6 +87,7 @@ export async function executeTool(
       url,
       latencyMs: Math.round(performance.now() - start),
       error: message,
+      requestBody: truncate(JSON.stringify(args)),
     });
     throw new Error(`Upstream request failed: ${message}`);
   }
