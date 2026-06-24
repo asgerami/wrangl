@@ -4,8 +4,10 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { randomBytes } from "node:crypto";
 import { ServerStore } from "../src/controlplane/store.js";
 import { ServerRegistry } from "../src/controlplane/registry.js";
+import { Vault } from "../src/controlplane/vault.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SPEC = join(here, "..", "examples", "jsonplaceholder.yaml");
@@ -54,6 +56,47 @@ test("a server created with a store survives a fresh registry (rehydrate)", asyn
   // createdAt is preserved across the restart.
   assert.equal(list[0].createdAt, created.createdAt);
   store2.close();
+});
+
+test("credentials persist encrypted and are restored on rehydrate", async () => {
+  const store1 = ServerStore.open(":memory:");
+  const key = randomBytes(32);
+  const reg1 = new ServerRegistry({ serverStore: store1, vault: new Vault(key) });
+  const entry = await reg1.create({ spec: SPEC, auth: { bearerAuth: "sk-secret" } });
+  reg1.setCredential(entry.id, "apiKeyAuth", "key-123");
+
+  // On disk, the value is an encrypted envelope, not the plaintext.
+  const stored = store1.credentialsFor(entry.id);
+  assert.match(stored.bearerAuth, /^v1:/);
+  assert.ok(!JSON.stringify(stored).includes("sk-secret"));
+
+  // A fresh registry with the same key + store decrypts them back.
+  const reg2 = new ServerRegistry({ serverStore: store1, vault: new Vault(key) });
+  const result = await reg2.load();
+  assert.equal(result.restored, 1);
+  assert.equal(reg2.get(entry.id)?.creds.bearerAuth, "sk-secret");
+  assert.equal(reg2.get(entry.id)?.creds.apiKeyAuth, "key-123");
+  store1.close();
+});
+
+test("a wrong key skips the credential but still loads the server", async () => {
+  const store = ServerStore.open(":memory:");
+  const reg1 = new ServerRegistry({ serverStore: store, vault: new Vault(randomBytes(32)) });
+  const entry = await reg1.create({ spec: SPEC, auth: { bearerAuth: "sk-secret" } });
+
+  const reg2 = new ServerRegistry({ serverStore: store, vault: new Vault(randomBytes(32)) });
+  const result = await reg2.load();
+  assert.equal(result.restored, 1); // server still loads
+  assert.equal(reg2.get(entry.id)?.creds.bearerAuth, undefined); // bad cred skipped
+  store.close();
+});
+
+test("without a vault, credentials are not persisted", async () => {
+  const store = ServerStore.open(":memory:");
+  const reg = new ServerRegistry({ serverStore: store }); // no vault
+  const entry = await reg.create({ spec: SPEC, auth: { bearerAuth: "sk-secret" } });
+  assert.deepEqual(store.credentialsFor(entry.id), {});
+  store.close();
 });
 
 test("removing a server deletes its persisted record", async () => {
