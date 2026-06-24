@@ -20,16 +20,22 @@ OpenAPI spec ──▶ Ingestion ──▶ Generation ──▶ MCP Runtime ─�
                  normalize)     MCP tools)      + auth inject)   LangChain…)
 ```
 
-- **Ingestion** (`src/parser`) — loads a spec from a URL or file (JSON/YAML),
-  validates and fully dereferences `$ref`s, resolves the upstream base URL.
+- **Ingestion** (`src/parser`) — loads an **OpenAPI 3.x** spec (URL or file,
+  JSON/YAML) or a **Postman collection** (v2.x), normalizes both to canonical
+  OpenAPI form, dereferences `$ref`s, and resolves the upstream base URL.
 - **Generation** (`src/generator`) — deterministically maps each
-  `(path, method)` operation to an MCP tool, deriving the input schema from
-  OpenAPI parameters + request body. _(The semantic LLM-enrichment pass that
-  rewrites raw names into agent-friendly descriptions slots in here.)_
+  `(path, method)` operation to an MCP tool: input schema from OpenAPI
+  parameters + request body, and an **outputSchema** from the success-response
+  schema. _(The semantic LLM-enrichment pass that rewrites raw names into
+  agent-friendly descriptions slots in here.)_
 - **Runtime** (`src/runtime`) — a single dynamic server that loads any generated
   spec and exposes its tools over **stdio** or **Streamable HTTP**. On each tool
-  call it builds the upstream request, injects auth, proxies it, and returns the
-  normalized response.
+  call it builds the upstream request — serializing array/object parameters per
+  their OpenAPI `style`/`explode` — injects auth, proxies it, and returns the
+  response as text plus validated `structuredContent`.
+
+Tested against large real-world specs (the full GitHub REST API, Petstore) to
+keep ingestion and schema generation robust.
 
 ## Quick start
 
@@ -49,7 +55,7 @@ npm run dev -- generate --spec examples/jsonplaceholder.yaml
 ```
 mcpify generate --spec <url|file> [options]
 
-  -s, --spec <source>     OpenAPI 3.x spec: a URL or path to a JSON/YAML file
+  -s, --spec <source>     OpenAPI 3.x spec or Postman collection: a URL or file
   -b, --base-url <url>    Upstream base URL (overrides the spec's `servers`)
   -t, --transport <type>  stdio | http              (default: stdio)
   -p, --port <number>     Port for the http transport (default: 3000)
@@ -158,8 +164,9 @@ subprocess over stdio.
 ```
 src/
   parser/openapi.ts     Ingestion: load, validate, normalize a spec
+  parser/postman.ts     Postman collection → canonical OpenAPI
   generator/tools.ts    Map endpoints → MCP tool definitions
-  generator/schema.ts   JSON Schema → Zod input shapes
+  generator/schema.ts   JSON Schema → Zod input/output shapes
   generator/enrich.ts   LLM semantic-enrichment pass (Claude, structured output)
   runtime/auth.ts       Credential resolution + auth injection
   runtime/proxy.ts      Build & execute the upstream HTTP request
@@ -172,8 +179,10 @@ test/                   Unit, network, and e2e tests
 
 ## Roadmap (from the product spec)
 
-This engine is MVP scope. Not yet built here: hosted multi-tenant deployment,
-the dashboard/control plane, persistent usage logs, OAuth2 authorization-code
-flow, spec auto-discovery, and live spec sync. The code is structured so each of
-these layers on top of the existing pipeline. The LLM semantic-enrichment pass
-(`--enrich`) is implemented — see above.
+This engine is MVP scope. Implemented: OpenAPI **and** Postman ingestion, the
+LLM semantic-enrichment pass (`--enrich`), `style`/`explode` parameter
+serialization, and response `outputSchema` / `structuredContent`. Not yet built
+here: hosted multi-tenant deployment, the dashboard/control plane, persistent
+usage logs, OAuth2 authorization-code flow, spec auto-discovery, and live spec
+sync. The code is structured so each of these layers on top of the existing
+pipeline.
