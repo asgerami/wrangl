@@ -8,6 +8,8 @@ import { serveStdio, serveHttp } from "./runtime/transport.js";
 import { watchSpec } from "./runtime/watch.js";
 import { diffTools, formatDiff, hasChanges } from "./generator/diff.js";
 import { LogStore, type LogRow } from "./runtime/logstore.js";
+import { ServerRegistry } from "./controlplane/registry.js";
+import { buildControlPlane } from "./controlplane/api.js";
 import type { RequestLog } from "./runtime/proxy.js";
 import {
   loadCredentialsFromEnv,
@@ -199,6 +201,33 @@ program
       if (options.json) console.log(JSON.stringify(rows, null, 2));
       else for (const row of rows) console.log(formatLogRow(row));
       store.close();
+    } catch (err) {
+      fail(err);
+    }
+  });
+
+program
+  .command("serve")
+  .description("Start the control-plane API that hosts multiple MCP servers.")
+  .option("-p, --port <number>", "Port to listen on", "4000")
+  .option("-H, --host <host>", "Host to bind", "127.0.0.1")
+  .option(
+    "-l, --log-db [path]",
+    `Usage-log SQLite file (default: ${DEFAULT_LOG_DB})`,
+  )
+  .action(async (options) => {
+    try {
+      const store = LogStore.open(logDbPath(options.logDb));
+      const registry = new ServerRegistry({ logStore: store });
+      const app = buildControlPlane(registry);
+      const port = Number(options.port);
+      await app.listen({ port, host: options.host });
+      console.error(
+        `\nMCPify control plane on http://${options.host}:${port}\n` +
+          `  POST /servers   {"spec":"<url|file>"}\n` +
+          `  GET  /servers   ·   hosted MCP at /servers/<id>/mcp\n` +
+          `Logging to ${logDbPath(options.logDb)}. Press Ctrl+C to stop.`,
+      );
     } catch (err) {
       fail(err);
     }

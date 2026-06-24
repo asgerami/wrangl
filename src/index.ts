@@ -28,6 +28,15 @@ export {
   type ReloadableServer,
 } from "./runtime/server.js";
 export { watchSpec, type WatchHandle, type WatchOptions } from "./runtime/watch.js";
+export {
+  ServerRegistry,
+  toSummary,
+  type ServerEntry,
+  type ServerSummary,
+  type CreateServerInput,
+  type RegistryOptions,
+} from "./controlplane/registry.js";
+export { buildControlPlane } from "./controlplane/api.js";
 export { executeTool, type ProxyContext, type RequestLog } from "./runtime/proxy.js";
 export {
   loadCredentialsFromEnv,
