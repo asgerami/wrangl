@@ -1,0 +1,88 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { ServerStore } from "../src/controlplane/store.js";
+import { ServerRegistry } from "../src/controlplane/registry.js";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const SPEC = join(here, "..", "examples", "jsonplaceholder.yaml");
+
+test("ServerStore upserts, lists, and deletes records", () => {
+  const store = ServerStore.open(":memory:");
+  store.upsert({ id: "a", name: "A", slug: "a", specSource: "s1", baseUrl: "u1", createdAt: 1 });
+  store.upsert({ id: "b", name: "B", slug: "b", specSource: "s2", baseUrl: "u2", createdAt: 2 });
+
+  let all = store.all();
+  assert.deepEqual(all.map((r) => r.id), ["a", "b"]); // oldest first
+
+  // Upsert on the same id updates in place rather than duplicating.
+  store.upsert({ id: "a", name: "A2", slug: "a", specSource: "s1b", baseUrl: "u1", createdAt: 1 });
+  all = store.all();
+  assert.equal(all.length, 2);
+  assert.equal(all.find((r) => r.id === "a")?.name, "A2");
+
+  store.delete("a");
+  assert.deepEqual(store.all().map((r) => r.id), ["b"]);
+  store.close();
+});
+
+test("a server created with a store survives a fresh registry (rehydrate)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mcpify-persist-"));
+  const dbPath = join(dir, "cp.db");
+
+  // First registry: create a server, then close the store.
+  const store1 = ServerStore.open(dbPath);
+  const reg1 = new ServerRegistry({ serverStore: store1 });
+  const created = await reg1.create({ spec: SPEC, name: "Persisted API" });
+  assert.equal(created.slug, "persisted-api");
+  store1.close();
+
+  // Second registry on the same file: load() re-ingests the stored spec.
+  const store2 = ServerStore.open(dbPath);
+  const reg2 = new ServerRegistry({ serverStore: store2 });
+  const result = await reg2.load();
+  assert.equal(result.restored, 1);
+  assert.equal(result.failed.length, 0);
+
+  const list = reg2.list();
+  assert.equal(list.length, 1);
+  assert.equal(list[0].slug, "persisted-api");
+  assert.equal(list[0].toolCount, 4);
+  // createdAt is preserved across the restart.
+  assert.equal(list[0].createdAt, created.createdAt);
+  store2.close();
+});
+
+test("removing a server deletes its persisted record", async () => {
+  const store = ServerStore.open(":memory:");
+  const reg = new ServerRegistry({ serverStore: store });
+  const entry = await reg.create({ spec: SPEC });
+  assert.equal(store.all().length, 1);
+
+  reg.remove(entry.id);
+  assert.equal(store.all().length, 0);
+  store.close();
+});
+
+test("load reports specs it can't re-ingest without dropping them", async () => {
+  const store = ServerStore.open(":memory:");
+  store.upsert({
+    id: "broken",
+    name: "Broken",
+    slug: "broken",
+    specSource: "/nonexistent/spec.yaml",
+    baseUrl: "https://x",
+    createdAt: 1,
+  });
+  const reg = new ServerRegistry({ serverStore: store });
+  const result = await reg.load();
+  assert.equal(result.restored, 0);
+  assert.equal(result.failed.length, 1);
+  assert.equal(result.failed[0].id, "broken");
+  // The record is kept for a future boot, not silently dropped.
+  assert.equal(store.all().length, 1);
+  store.close();
+});
