@@ -3,9 +3,12 @@ import { join } from "node:path";
 import { Command } from "commander";
 import { ingest } from "./parser/openapi.js";
 import { enrichTools } from "./generator/enrich.js";
-import { createMcpServer } from "./runtime/server.js";
+import { createMcpServer, createReloadableServer } from "./runtime/server.js";
 import { serveStdio, serveHttp } from "./runtime/transport.js";
+import { watchSpec } from "./runtime/watch.js";
+import { diffTools, formatDiff, hasChanges } from "./generator/diff.js";
 import { LogStore, type LogRow } from "./runtime/logstore.js";
+import type { RequestLog } from "./runtime/proxy.js";
 import {
   loadCredentialsFromEnv,
   parseAuthFlags,
@@ -56,44 +59,70 @@ program
     "-l, --log-db [path]",
     `Persist usage logs to a SQLite file (default: ${DEFAULT_LOG_DB})`,
   )
+  .option(
+    "-w, --watch <seconds>",
+    "Re-ingest the spec every N seconds and hot-reload changed tools",
+    (v) => Number(v),
+  )
   .action(async (options) => {
     try {
-      const generated = await ingest(options.spec, {
-        baseUrl: options.baseUrl,
-      });
-      await maybeEnrich(generated, options);
-      logSummary(generated);
+      // `active` is the live spec; the http build closure and watcher read it.
+      let active = await ingest(options.spec, { baseUrl: options.baseUrl });
+      await maybeEnrich(active, options);
+      logSummary(active);
 
-      const creds = resolveCredentials(generated, options.auth);
-      warnMissingCreds(generated, creds);
+      const creds = resolveCredentials(active, options.auth);
+      warnMissingCreds(active, creds);
 
       const store = openLogStore(options.logDb);
       if (store) console.error(`→ logging tool calls to ${logDbPath(options.logDb)}`);
 
-      const build = () =>
-        createMcpServer(generated, {
-          creds,
-          // Logs go to stderr so stdout stays clean for the stdio transport,
-          // and to the persistent store when --log-db is enabled.
-          onLog: (e) => {
-            console.error(
-              `[${e.statusCode ?? "ERR"}] ${e.method} ${e.tool} ${e.latencyMs}ms` +
-                (e.error ? ` — ${e.error}` : ""),
-            );
-            store?.record(generated.name, e);
+      const onLog = (e: RequestLog) => {
+        console.error(
+          `[${e.statusCode ?? "ERR"}] ${e.method} ${e.tool} ${e.latencyMs}ms` +
+            (e.error ? ` — ${e.error}` : ""),
+        );
+        store?.record(active.name, e);
+      };
+
+      const startWatch = (onChange: (next: typeof active) => void) => {
+        if (!options.watch) return;
+        console.error(`→ watching spec every ${options.watch}s for changes`);
+        watchSpec(
+          options.spec,
+          {
+            intervalMs: options.watch * 1000,
+            parse: { baseUrl: options.baseUrl },
+            seed: active,
+            onError: (err) =>
+              console.error(`⚠ spec re-ingest failed: ${errMessage(err)}`),
           },
-        });
+          onChange,
+        );
+      };
 
       if (options.transport === "http") {
         const port = Number(options.port);
-        await serveHttp(build, { port });
+        await serveHttp(() => createMcpServer(active, { creds, onLog }), { port });
         console.error(
           `\nMCP server live at http://127.0.0.1:${port}/mcp ` +
             `(Streamable HTTP)\nPress Ctrl+C to stop.`,
         );
+        // New HTTP sessions read `active`, so swapping it applies the new spec.
+        startWatch((next) => {
+          const diff = diffTools(active.tools, next.tools);
+          active = next;
+          if (hasChanges(diff)) console.error(`\n↻ spec changed:\n${formatDiff(diff)}`);
+        });
       } else {
+        const reloadable = createReloadableServer(active, { creds, onLog });
         console.error("\nMCP server live on stdio. Connect an agent client.");
-        await serveStdio(build());
+        startWatch((next) => {
+          const diff = reloadable.reload(next);
+          active = next;
+          if (hasChanges(diff)) console.error(`\n↻ spec changed:\n${formatDiff(diff)}`);
+        });
+        await serveStdio(reloadable.server);
       }
     } catch (err) {
       fail(err);
@@ -282,8 +311,11 @@ function warnMissingCreds(
   }
 }
 
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 function fail(err: unknown): never {
-  const message = err instanceof Error ? err.message : String(err);
-  console.error(`\n✗ ${message}`);
+  console.error(`\n✗ ${errMessage(err)}`);
   process.exit(1);
 }

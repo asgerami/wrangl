@@ -14,7 +14,20 @@ export {
   type EnrichmentBatchResult,
 } from "./generator/enrich.js";
 export { toolInputShape, jsonSchemaToZod } from "./generator/schema.js";
-export { createMcpServer, type RuntimeOptions } from "./runtime/server.js";
+export {
+  diffTools,
+  hasChanges,
+  formatDiff,
+  type SpecDiff,
+  type ToolChange,
+} from "./generator/diff.js";
+export {
+  createMcpServer,
+  createReloadableServer,
+  type RuntimeOptions,
+  type ReloadableServer,
+} from "./runtime/server.js";
+export { watchSpec, type WatchHandle, type WatchOptions } from "./runtime/watch.js";
 export { executeTool, type ProxyContext, type RequestLog } from "./runtime/proxy.js";
 export {
   loadCredentialsFromEnv,
