@@ -64,6 +64,7 @@ mcpify generate --spec <url|file> [options]
   -m, --model <id>        Claude model for enrichment (default: claude-opus-4-8)
   --effort <level>        Enrichment reasoning effort: low | medium | high (default: low)
   -l, --log-db [path]     Persist tool-call logs to SQLite (default .mcpify/logs.db)
+  -w, --watch <seconds>   Re-ingest the spec every N seconds and hot-reload tools
 
 mcpify inspect --spec <url|file> [--json] [--enrich]
   Parse a spec and print the generated tools without serving.
@@ -119,6 +120,29 @@ mcpify logs --tail
 
 Backed by Node's built-in `node:sqlite` — no external database to run. This is
 the same log store the future dashboard reads from.
+
+### Live spec sync
+
+Pass `--watch <seconds>` to `generate` and MCPify re-ingests the spec on that
+interval. When the tools change, it diffs them and **hot-reloads the running
+server** — adding, removing, and updating tools in place and emitting a
+`tools/list_changed` notification, so connected agents pick up the new surface
+without reconnecting.
+
+```bash
+mcpify generate --spec ./api.yaml --watch 30
+```
+
+```
+↻ spec changed:
++1 added  ~1 changed  -0 removed
+  + get_user_by_id
+  ~ list_posts (params)
+```
+
+Polling needs no inbound connectivity; a webhook trigger would call the same
+reload path. The diff engine and `createReloadableServer` / `watchSpec` are
+exported for programmatic use.
 
 ### Connecting from Claude Desktop
 
@@ -201,10 +225,12 @@ src/
   generator/tools.ts    Map endpoints → MCP tool definitions
   generator/schema.ts   JSON Schema → Zod input/output shapes
   generator/enrich.ts   LLM semantic-enrichment pass (Claude, structured output)
+  generator/diff.ts     Diff two tool sets for live reload
   runtime/auth.ts       Credential resolution + auth injection
   runtime/proxy.ts      Build & execute the upstream HTTP request
   runtime/logstore.ts   SQLite usage-log store (node:sqlite)
-  runtime/server.ts     Assemble a live McpServer from a spec
+  runtime/server.ts     Assemble a live (reloadable) McpServer from a spec
+  runtime/watch.ts      Poll a spec and fire on change (live sync)
   runtime/transport.ts  stdio + Streamable HTTP transports
   cli.ts                `mcpify generate` / `inspect` / `logs`
 examples/               Sample specs to try
@@ -215,8 +241,9 @@ test/                   Unit, network, and e2e tests
 
 This engine is MVP scope. Implemented: OpenAPI **and** Postman ingestion, the
 LLM semantic-enrichment pass (`--enrich`), `style`/`explode` parameter
-serialization, response `outputSchema` / `structuredContent`, and persistent
-SQLite usage logs (`--log-db` + `mcpify logs`). Not yet built here: hosted
-multi-tenant deployment, the dashboard/control plane, OAuth2 authorization-code
-flow, spec auto-discovery, and live spec sync. The code is structured so each of
-these layers on top of the existing pipeline.
+serialization, response `outputSchema` / `structuredContent`, persistent SQLite
+usage logs (`--log-db` + `mcpify logs`), and live spec sync (`--watch`:
+re-ingest, diff, and hot-reload tools without dropping connections). Not yet
+built here: hosted multi-tenant deployment, the dashboard/control plane, OAuth2
+authorization-code flow, and spec auto-discovery. The code is structured so each
+of these layers on top of the existing pipeline.
