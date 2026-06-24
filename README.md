@@ -63,9 +63,19 @@ mcpify generate --spec <url|file> [options]
   -e, --enrich            Run the LLM semantic-enrichment pass (needs ANTHROPIC_API_KEY)
   -m, --model <id>        Claude model for enrichment (default: claude-opus-4-8)
   --effort <level>        Enrichment reasoning effort: low | medium | high (default: low)
+  -l, --log-db [path]     Persist tool-call logs to SQLite (default .mcpify/logs.db)
 
 mcpify inspect --spec <url|file> [--json] [--enrich]
   Parse a spec and print the generated tools without serving.
+
+mcpify logs [options]
+  -d, --db [path]         Log database path (default .mcpify/logs.db)
+  --server <name>         Filter by server name
+  --tool <name>           Filter by tool name
+  --status <code>         Filter by HTTP status code
+  -n, --limit <number>    Max rows to show (default 50)
+  -f, --tail              Follow the log, printing new calls as they arrive
+  --json                  Output rows as JSON
 ```
 
 ### Semantic enrichment (LLM pass)
@@ -86,6 +96,29 @@ mcpify generate --spec examples/jsonplaceholder.yaml --enrich --model claude-son
 
 Defaults to `claude-opus-4-8`; pass `--model claude-sonnet-4-6` to match the
 model named in the product spec. Honors `ANTHROPIC_BASE_URL` for gateways.
+
+### Usage logs
+
+Pass `--log-db` to `generate` to persist every tool call to a SQLite database
+(request args + truncated response body, status, latency). Query or follow them
+with `mcpify logs` — handy for debugging what an agent actually called.
+
+```bash
+# Serve with persistent logging
+mcpify generate --spec examples/jsonplaceholder.yaml --log-db
+
+# Browse and follow the logs
+mcpify logs --tool get_post --status 200
+mcpify logs --tail
+```
+
+```
+2026-06-24T18:34:06.899Z  [200] GET get_post (JSONPlaceholder) 142ms
+2026-06-24T18:34:06.957Z  [401] POST create_post (JSONPlaceholder) 88ms
+```
+
+Backed by Node's built-in `node:sqlite` — no external database to run. This is
+the same log store the future dashboard reads from.
 
 ### Connecting from Claude Desktop
 
@@ -170,9 +203,10 @@ src/
   generator/enrich.ts   LLM semantic-enrichment pass (Claude, structured output)
   runtime/auth.ts       Credential resolution + auth injection
   runtime/proxy.ts      Build & execute the upstream HTTP request
+  runtime/logstore.ts   SQLite usage-log store (node:sqlite)
   runtime/server.ts     Assemble a live McpServer from a spec
   runtime/transport.ts  stdio + Streamable HTTP transports
-  cli.ts                `mcpify generate` / `mcpify inspect`
+  cli.ts                `mcpify generate` / `inspect` / `logs`
 examples/               Sample specs to try
 test/                   Unit, network, and e2e tests
 ```
@@ -181,8 +215,8 @@ test/                   Unit, network, and e2e tests
 
 This engine is MVP scope. Implemented: OpenAPI **and** Postman ingestion, the
 LLM semantic-enrichment pass (`--enrich`), `style`/`explode` parameter
-serialization, and response `outputSchema` / `structuredContent`. Not yet built
-here: hosted multi-tenant deployment, the dashboard/control plane, persistent
-usage logs, OAuth2 authorization-code flow, spec auto-discovery, and live spec
-sync. The code is structured so each of these layers on top of the existing
-pipeline.
+serialization, response `outputSchema` / `structuredContent`, and persistent
+SQLite usage logs (`--log-db` + `mcpify logs`). Not yet built here: hosted
+multi-tenant deployment, the dashboard/control plane, OAuth2 authorization-code
+flow, spec auto-discovery, and live spec sync. The code is structured so each of
+these layers on top of the existing pipeline.
