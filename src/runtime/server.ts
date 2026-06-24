@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { GeneratedServer } from "../types.js";
-import { toolInputShape } from "../generator/schema.js";
+import { toolInputShape, toolOutputShape } from "../generator/schema.js";
 import {
   executeTool,
   type ProxyContext,
@@ -37,15 +37,17 @@ export function createMcpServer(
   };
 
   for (const tool of generated.tools) {
+    const outputSchema = toolOutputShape(tool);
     server.registerTool(
       tool.name,
       {
         description: tool.description,
         inputSchema: toolInputShape(tool),
+        ...(outputSchema ? { outputSchema } : {}),
       },
       async (args: Record<string, unknown>): Promise<CallToolResult> => {
         const result = await executeTool(tool, args ?? {}, ctx);
-        return {
+        const base: CallToolResult = {
           // Surface HTTP errors to the agent rather than throwing, so it can
           // adapt (retry, fix params) instead of seeing an opaque failure.
           isError: !result.ok,
@@ -56,11 +58,36 @@ export function createMcpServer(
             },
           ],
         };
+
+        // When the tool declares an output schema, a successful call must carry
+        // structuredContent that validates against it (the SDK enforces this).
+        // Validate here and fall back to {} — the schema is all-optional, so {}
+        // always passes — guaranteeing a divergent response can't crash the
+        // call. The full body is always available in the text content above.
+        if (outputSchema && result.ok) {
+          const parsed = outputSchema.safeParse(asObject(result.body));
+          base.structuredContent = parsed.success
+            ? (parsed.data as Record<string, unknown>)
+            : {};
+        }
+        return base;
       },
     );
   }
 
   return server;
+}
+
+/** Parse a response body to a plain object, or {} if it isn't one. */
+function asObject(body: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(body);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 function formatResult(status: number, ok: boolean, body: string): string {

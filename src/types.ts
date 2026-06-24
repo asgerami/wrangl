@@ -5,6 +5,18 @@
 /** Where a parameter is placed in the outgoing HTTP request. */
 export type ParamLocation = "path" | "query" | "header" | "cookie";
 
+/**
+ * How an array/object parameter is serialized into the request, per the
+ * OpenAPI `style` + `explode` keywords. We map these to wire encodings in the
+ * proxy. Only the styles that appear in real specs are modelled.
+ */
+export type ParamStyle =
+  | "form"
+  | "simple"
+  | "spaceDelimited"
+  | "pipeDelimited"
+  | "deepObject";
+
 /** A single input parameter on a generated MCP tool. */
 export interface ToolParam {
   /** Property name exposed to the agent (sanitized for safety). */
@@ -16,6 +28,10 @@ export interface ToolParam {
   description?: string;
   /** JSON Schema fragment for this parameter, straight from the spec. */
   schema: JsonSchema;
+  /** Serialization style (OpenAPI `style`). Defaults by location. */
+  style: ParamStyle;
+  /** Whether array/object values explode into multiple pairs (OpenAPI `explode`). */
+  explode: boolean;
 }
 
 /**
@@ -42,6 +58,13 @@ export interface ToolDef {
   body?: ToolBody;
   /** Security scheme names this operation requires (OR semantics). */
   security: string[];
+  /**
+   * JSON Schema of the success (2xx) response, when it is an object. Drives the
+   * MCP tool's `outputSchema` so agents see the return shape and the runtime
+   * can hand back `structuredContent`. Absent for array/primitive/no-schema
+   * responses (MCP output schemas must be objects).
+   */
+  outputSchema?: JsonSchema;
 }
 
 /** The product of ingestion + generation: everything the runtime needs. */

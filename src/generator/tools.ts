@@ -1,6 +1,7 @@
 import type {
   JsonSchema,
   ParamLocation,
+  ParamStyle,
   SecurityScheme,
   ToolDef,
   ToolParam,
@@ -44,6 +45,7 @@ export function buildTools(
       );
       const body = extractBody(op);
       const security = resolveSecurity(op, api, securitySchemes);
+      const outputSchema = extractOutputSchema(op);
 
       tools.push({
         name,
@@ -53,6 +55,7 @@ export function buildTools(
         params,
         body,
         security,
+        outputSchema,
       });
     }
   }
@@ -117,6 +120,7 @@ function mergeParams(
 
 function toToolParam(p: RawParameter): ToolParam {
   const location = (p.in as ParamLocation) ?? "query";
+  const style = normalizeStyle(p.style, location);
   return {
     name: sanitize(p.name),
     sourceName: p.name,
@@ -124,7 +128,53 @@ function toToolParam(p: RawParameter): ToolParam {
     required: p.required ?? location === "path", // path params are always required
     description: p.description,
     schema: p.schema ?? { type: "string" },
+    style,
+    // OpenAPI default: explode is true for `form`, false for every other style.
+    explode: p.explode ?? style === "form",
   };
+}
+
+/** Resolve the serialization style, applying OpenAPI's per-location defaults. */
+function normalizeStyle(style: string | undefined, location: ParamLocation): ParamStyle {
+  const known: ParamStyle[] = [
+    "form",
+    "simple",
+    "spaceDelimited",
+    "pipeDelimited",
+    "deepObject",
+  ];
+  if (style && (known as string[]).includes(style)) return style as ParamStyle;
+  // Defaults: query/cookie → form; path/header → simple.
+  return location === "query" || location === "cookie" ? "form" : "simple";
+}
+
+/**
+ * Extract the success-response schema for the tool's `outputSchema`. We only
+ * keep it when the response is a JSON object — MCP output schemas must be
+ * objects, and array/primitive bodies are surfaced via text content instead.
+ */
+function extractOutputSchema(op: Operation): JsonSchema | undefined {
+  const responses = op.responses;
+  if (!responses) return undefined;
+
+  // Prefer the lowest 2xx status, then a `default` response.
+  const successKey =
+    Object.keys(responses)
+      .filter((k) => /^2\d\d$/.test(k))
+      .sort()[0] ?? (responses.default ? "default" : undefined);
+  if (!successKey) return undefined;
+
+  const content = responses[successKey]?.content;
+  if (!content) return undefined;
+
+  const jsonType =
+    Object.keys(content).find((c) => c.includes("json")) ?? Object.keys(content)[0];
+  const schema = jsonType ? (content[jsonType]?.schema as JsonSchema | undefined) : undefined;
+  if (!schema) return undefined;
+
+  const type = Array.isArray(schema.type) ? schema.type[0] : schema.type;
+  const isObject = type === "object" || (!type && !!schema.properties);
+  return isObject ? schema : undefined;
 }
 
 /** Pick a JSON request body, preferring application/json. */

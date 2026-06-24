@@ -26,6 +26,27 @@ export function toolInputShape(tool: ToolDef): Record<string, z.ZodTypeAny> {
 }
 
 /**
+ * Build the MCP `outputSchema` for a tool from its success-response schema.
+ * Returns an object schema whose top-level properties are all optional and
+ * which passes through unknown keys — so it advertises the return shape to
+ * agents without rejecting partial or slightly-divergent real responses. The
+ * runtime pairs this with a safe fallback for the rare validation miss.
+ */
+export function toolOutputShape(tool: ToolDef): z.ZodTypeAny | undefined {
+  const schema = tool.outputSchema;
+  if (!schema) return undefined;
+
+  const properties = schema.properties ?? {};
+  const shape: Record<string, z.ZodTypeAny> = {};
+  for (const [key, propSchema] of Object.entries(properties)) {
+    let prop = jsonSchemaToZod(propSchema).optional();
+    if (propSchema.description) prop = prop.describe(propSchema.description);
+    shape[key] = prop;
+  }
+  return z.object(shape).passthrough();
+}
+
+/**
  * Best-effort JSON Schema → Zod conversion covering the constructs that show
  * up in real OpenAPI specs. Unknown shapes fall back to `z.any()` so we never
  * fail to register a tool.

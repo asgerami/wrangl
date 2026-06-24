@@ -109,7 +109,7 @@ function buildRequest(
         );
         break;
       case "query":
-        appendQuery(query, param.sourceName, value);
+        serializeQuery(query, param, value);
         break;
       case "header":
         headers[param.sourceName] = stringify(value);
@@ -149,16 +149,49 @@ function buildRequest(
   return { url, headers, body };
 }
 
-function appendQuery(
+/**
+ * Serialize a query parameter according to its OpenAPI `style` + `explode`.
+ * Covers the encodings real specs use: form (default, explode and joined),
+ * space/pipe-delimited arrays, and deepObject / form object encodings.
+ */
+function serializeQuery(
   query: URLSearchParams,
-  key: string,
+  param: { sourceName: string; style: import("../types.js").ParamStyle; explode: boolean },
   value: unknown,
 ): void {
+  const key = param.sourceName;
+
   if (Array.isArray(value)) {
-    for (const v of value) query.append(key, stringify(v));
-  } else {
-    query.append(key, stringify(value));
+    const items = value.map(stringify);
+    if (param.explode) {
+      // form/spaceDelimited/pipeDelimited + explode → one pair per item.
+      for (const v of items) query.append(key, v);
+      return;
+    }
+    const sep =
+      param.style === "spaceDelimited" ? " " : param.style === "pipeDelimited" ? "|" : ",";
+    query.append(key, items.join(sep));
+    return;
   }
+
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (param.style === "deepObject") {
+      // deepObject → key[prop]=value (always exploded).
+      for (const [k, v] of entries) query.append(`${key}[${k}]`, stringify(v));
+      return;
+    }
+    if (param.explode) {
+      // form + explode → prop=value for each property (key itself dropped).
+      for (const [k, v] of entries) query.append(k, stringify(v));
+      return;
+    }
+    // form, no explode → key=prop1,value1,prop2,value2
+    query.append(key, entries.map(([k, v]) => `${k},${stringify(v)}`).join(","));
+    return;
+  }
+
+  query.append(key, stringify(value));
 }
 
 function appendCookie(existing: string | undefined, key: string, value: string): string {
