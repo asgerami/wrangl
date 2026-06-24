@@ -4,6 +4,7 @@ import { diffTools, type SpecDiff } from "../generator/diff.js";
 import { LogStore, type LogQuery, type LogRow } from "../runtime/logstore.js";
 import { loadCredentialsFromEnv, type CredentialStore } from "../runtime/auth.js";
 import { ServerStore, type ServerRecord } from "./store.js";
+import { Vault } from "./vault.js";
 import type { GeneratedServer, ToolDef } from "../types.js";
 
 /**
@@ -53,16 +54,24 @@ export interface RegistryOptions {
   logStore?: LogStore;
   /** Durable store for server records; when omitted, the registry is in-memory. */
   serverStore?: ServerStore;
+  /**
+   * Vault for encrypting credentials at rest. With a serverStore present,
+   * credentials are persisted (AES-256-GCM) and restored on load; without a
+   * vault they stay in memory only and don't survive a restart.
+   */
+  vault?: Vault;
 }
 
 export class ServerRegistry {
   private entries = new Map<string, ServerEntry>();
   private logStore?: LogStore;
   private serverStore?: ServerStore;
+  private vault?: Vault;
 
   constructor(opts: RegistryOptions = {}) {
     this.logStore = opts.logStore;
     this.serverStore = opts.serverStore;
+    this.vault = opts.vault;
   }
 
   async create(input: CreateServerInput): Promise<ServerEntry> {
@@ -75,6 +84,11 @@ export class ServerRegistry {
     });
     this.entries.set(entry.slug, entry);
     this.serverStore?.upsert(toRecord(entry));
+    // Persist only explicitly-provided credentials (encrypted); env-derived
+    // ones are re-derived on boot and need no storage.
+    for (const [scheme, value] of Object.entries(input.auth ?? {})) {
+      this.persistCredential(entry.slug, scheme, value);
+    }
     return entry;
   }
 
@@ -97,6 +111,7 @@ export class ServerRegistry {
           slug: record.slug,
           createdAt: record.createdAt,
         });
+        this.restoreCredentials(entry); // decrypt persisted creds over env-derived
         this.entries.set(entry.slug, entry);
         restored++;
       } catch (err) {
@@ -170,7 +185,28 @@ export class ServerRegistry {
     const entry = this.entries.get(id);
     if (!entry) return false;
     entry.creds[scheme] = value; // ctx.creds references this object by reference
+    this.persistCredential(id, scheme, value);
     return true;
+  }
+
+  /** Encrypt and persist a credential when a vault + store are configured. */
+  private persistCredential(serverId: string, scheme: string, value: string): void {
+    if (!this.serverStore || !this.vault) return;
+    this.serverStore.setCredential(serverId, scheme, this.vault.encrypt(value));
+  }
+
+  /** Decrypt persisted credentials onto an entry's live credential store. */
+  private restoreCredentials(entry: ServerEntry): void {
+    if (!this.serverStore || !this.vault) return;
+    for (const [scheme, enc] of Object.entries(this.serverStore.credentialsFor(entry.slug))) {
+      try {
+        entry.creds[scheme] = this.vault.decrypt(enc);
+      } catch {
+        // Wrong key or tampered envelope — skip this credential rather than
+        // failing the whole boot. The server still loads (likely returning 401
+        // until the credential is re-supplied).
+      }
+    }
   }
 
   remove(id: string): boolean {

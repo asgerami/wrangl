@@ -10,6 +10,7 @@ import { diffTools, formatDiff, hasChanges } from "./generator/diff.js";
 import { LogStore, type LogRow } from "./runtime/logstore.js";
 import { ServerRegistry } from "./controlplane/registry.js";
 import { ServerStore } from "./controlplane/store.js";
+import { Vault } from "./controlplane/vault.js";
 import { buildControlPlane } from "./controlplane/api.js";
 import type { RequestLog } from "./runtime/proxy.js";
 import {
@@ -219,10 +220,18 @@ program
   .action(async (options) => {
     try {
       const dbPath = logDbPath(options.logDb);
+      const vault = Vault.fromEnv();
       const registry = new ServerRegistry({
         logStore: LogStore.open(dbPath),
         serverStore: ServerStore.open(dbPath),
+        vault,
       });
+      console.error(
+        vault
+          ? "→ credential encryption enabled (MCPIFY_SECRET_KEY)"
+          : "⚠ MCPIFY_SECRET_KEY not set — credentials stay in memory only " +
+              "(set it to persist them encrypted across restarts)",
+      );
 
       // Rehydrate previously-created servers by re-ingesting their specs.
       const { restored, failed } = await registry.load();
