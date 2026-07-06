@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { createServer as createHttpServer, type Server } from "node:http";
+import { AddressInfo } from "node:net";
 import { ServerRegistry } from "../src/controlplane/registry.js";
 import { buildControlPlane } from "../src/controlplane/api.js";
 import { LogStore } from "../src/runtime/logstore.js";
@@ -92,6 +94,53 @@ test("DELETE removes a server", async () => {
 
   assert.equal((await a.inject({ method: "DELETE", url: `/servers/${id}` })).statusCode, 204);
   assert.equal((await a.inject({ url: `/servers/${id}` })).statusCode, 404);
+  await a.close();
+});
+
+test("server detail exposes security schemes for the credentials form", async () => {
+  const { app: a } = app();
+  await createServer(a, { spec: SPEC });
+  const id = (await a.inject({ url: "/servers" })).json()[0].id;
+  const detail = (await a.inject({ url: `/servers/${id}` })).json();
+  assert.ok(Array.isArray(detail.securitySchemes));
+  // The JSONPlaceholder example declares no security schemes.
+  assert.equal(detail.securitySchemes.length, 0);
+  await a.close();
+});
+
+test("POST /servers with discover finds and creates from a base URL", async () => {
+  // A local upstream that serves an OpenAPI spec at a well-known path.
+  const spec = JSON.stringify({
+    openapi: "3.0.0",
+    info: { title: "Discovered API", version: "1" },
+    servers: [{ url: "http://example.test" }],
+    paths: { "/ping": { get: { operationId: "ping", responses: {} } } },
+  });
+  const upstream: Server = createHttpServer((req, res) => {
+    if (req.url === "/openapi.json") {
+      res.writeHead(200, { "content-type": "application/json" }).end(spec);
+    } else res.writeHead(404).end();
+  });
+  await new Promise<void>((r) => upstream.listen(0, "127.0.0.1", r));
+  const port = (upstream.address() as AddressInfo).port;
+
+  const { app: a } = app();
+  try {
+    const res = await createServer(a, { discover: `http://127.0.0.1:${port}` });
+    assert.equal(res.statusCode, 201);
+    assert.equal(res.json().name, "Discovered API");
+    assert.equal(res.json().toolCount, 1);
+  } finally {
+    await a.close();
+    await new Promise<void>((r) => upstream.close(() => r()));
+  }
+});
+
+test("POST /servers without spec or discover is a 400", async () => {
+  const { app: a } = app();
+  const res = await createServer(a, { name: "x", baseUrl: "http://y" });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.json().error, /spec.*discover/i);
   await a.close();
 });
 
