@@ -26,11 +26,13 @@ test(
     try {
       // Create a server via the REST API.
       const created = await app.inject({ method: "POST", url: "/servers", payload: { spec: SPEC } });
-      const slug = created.json().slug;
+      const { slug, mcpToken } = created.json();
+      assert.ok(mcpToken, "creation should return a per-server MCP token");
 
-      // Connect a real MCP client to the hosted Streamable HTTP endpoint.
+      // Connect a real MCP client, presenting the per-server Bearer token.
       const transport = new StreamableHTTPClientTransport(
         new URL(`${base}/servers/${slug}/mcp`),
+        { requestInit: { headers: { Authorization: `Bearer ${mcpToken}` } } },
       );
       const client = new Client({ name: "cp-test", version: "1" });
       await client.connect(transport);

@@ -133,8 +133,8 @@ test("control-plane OAuth endpoints: config → authorize redirect → callback"
     assert.equal(cfg.statusCode, 204);
 
     const authz = await app.inject({ url: `/servers/${entry.id}/oauth/userAuth/authorize` });
-    assert.equal(authz.statusCode, 302);
-    const state = new URL(authz.headers.location as string).searchParams.get("state")!;
+    assert.equal(authz.statusCode, 200);
+    const state = new URL(authz.json().url).searchParams.get("state")!;
     assert.ok(state);
 
     const cb = await app.inject({ url: `/oauth/callback?state=${state}&code=abc` });
