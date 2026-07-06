@@ -5,6 +5,13 @@
  *   ingest(spec) → GeneratedServer → createMcpServer() → serve over a transport
  */
 export { ingest, type ParseOptions } from "./parser/openapi.js";
+export {
+  discoverSpec,
+  isSpecDocument,
+  DEFAULT_SPEC_PATHS,
+  type DiscoverOptions,
+  type DiscoverResult,
+} from "./parser/discover.js";
 export { buildTools } from "./generator/tools.js";
 export {
   enrichTools,

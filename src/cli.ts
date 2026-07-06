@@ -2,6 +2,7 @@
 import { join } from "node:path";
 import { Command } from "commander";
 import { ingest } from "./parser/openapi.js";
+import { discoverSpec } from "./parser/discover.js";
 import { enrichTools } from "./generator/enrich.js";
 import { createMcpServer, createReloadableServer } from "./runtime/server.js";
 import { serveStdio, serveHttp } from "./runtime/transport.js";
@@ -34,9 +35,13 @@ program
 program
   .command("generate")
   .description("Generate and serve an MCP server from an OpenAPI spec.")
-  .requiredOption(
+  .option(
     "-s, --spec <source>",
-    "OpenAPI 3.x spec: a URL, or a path to a JSON/YAML file",
+    "OpenAPI 3.x spec or Postman collection: a URL or file path",
+  )
+  .option(
+    "-d, --discover <baseUrl>",
+    "Auto-discover the spec by probing well-known paths under a base URL",
   )
   .option(
     "-b, --base-url <url>",
@@ -71,8 +76,9 @@ program
   )
   .action(async (options) => {
     try {
+      const specSource = await resolveSpec(options);
       // `active` is the live spec; the http build closure and watcher read it.
-      let active = await ingest(options.spec, { baseUrl: options.baseUrl });
+      let active = await ingest(specSource, { baseUrl: options.baseUrl });
       await maybeEnrich(active, options);
       logSummary(active);
 
@@ -94,7 +100,7 @@ program
         if (!options.watch) return;
         console.error(`→ watching spec every ${options.watch}s for changes`);
         watchSpec(
-          options.spec,
+          specSource,
           {
             intervalMs: options.watch * 1000,
             parse: { baseUrl: options.baseUrl },
@@ -137,7 +143,8 @@ program
 program
   .command("inspect")
   .description("Parse a spec and print the generated tools without serving.")
-  .requiredOption("-s, --spec <source>", "OpenAPI 3.x spec URL or file path")
+  .option("-s, --spec <source>", "OpenAPI 3.x spec or Postman collection: URL or file")
+  .option("-d, --discover <baseUrl>", "Auto-discover the spec under a base URL")
   .option("-b, --base-url <url>", "Upstream API base URL")
   .option("--json", "Output the full tool definitions as JSON")
   .option(
@@ -148,7 +155,7 @@ program
   .option("--effort <level>", "Enrichment reasoning effort: low | medium | high", "low")
   .action(async (options) => {
     try {
-      const generated = await ingest(options.spec, {
+      const generated = await ingest(await resolveSpec(options), {
         baseUrl: options.baseUrl,
       });
       await maybeEnrich(generated, options);
@@ -275,6 +282,27 @@ program.parseAsync();
 
 function collect(value: string, previous: string[]): string[] {
   return previous.concat([value]);
+}
+
+/**
+ * Resolve the spec source from --spec, or auto-discover it from --discover.
+ * Exactly one must be provided.
+ */
+async function resolveSpec(options: { spec?: string; discover?: string }): Promise<string> {
+  if (options.spec) return options.spec;
+  if (options.discover) {
+    console.error(`→ discovering spec under ${options.discover}…`);
+    const found = await discoverSpec(options.discover);
+    if (!found) {
+      throw new Error(
+        `No OpenAPI/Swagger spec found under ${options.discover}. ` +
+          `Pass --spec with the exact spec URL instead.`,
+      );
+    }
+    console.error(`→ found spec at ${found.specUrl}`);
+    return found.specUrl;
+  }
+  throw new Error("Provide --spec <url|file> or --discover <baseUrl>.");
 }
 
 /** Resolve the log DB path from a flag value (`true` → default path). */

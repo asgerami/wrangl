@@ -3,6 +3,7 @@ import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply }
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpServer } from "../runtime/server.js";
 import { formatDiff } from "../generator/diff.js";
+import { discoverSpec } from "../parser/discover.js";
 import { DASHBOARD_HTML } from "./dashboard.js";
 import { ServerRegistry, toSummary, type CreateServerInput } from "./registry.js";
 
@@ -23,15 +24,27 @@ export function buildControlPlane(registry: ServerRegistry): FastifyInstance {
   // The dashboard (single self-contained page) drives the API below.
   app.get("/", async (_request, reply) => reply.type("text/html").send(DASHBOARD_HTML));
 
-  // Create a server from a spec.
+  // Create a server from a spec, or auto-discover one from a base URL.
   app.post("/servers", async (request, reply) => {
-    const body = (request.body ?? {}) as Partial<CreateServerInput>;
-    if (!body.spec) {
-      return reply.code(400).send({ error: "`spec` is required (URL or file path)." });
+    const body = (request.body ?? {}) as Partial<CreateServerInput> & { discover?: string };
+    if (!body.spec && !body.discover) {
+      return reply
+        .code(400)
+        .send({ error: "Provide `spec` (URL or file path) or `discover` (base URL)." });
     }
     try {
+      let spec = body.spec;
+      if (!spec && body.discover) {
+        const found = await discoverSpec(body.discover);
+        if (!found) {
+          return reply
+            .code(400)
+            .send({ error: `No spec found under ${body.discover}. Pass \`spec\` directly.` });
+        }
+        spec = found.specUrl;
+      }
       const entry = await registry.create({
-        spec: body.spec,
+        spec: spec!,
         name: body.name,
         baseUrl: body.baseUrl,
         auth: body.auth,
@@ -47,7 +60,14 @@ export function buildControlPlane(registry: ServerRegistry): FastifyInstance {
   app.get("/servers/:id", async (request, reply) => {
     const entry = registry.get(idParam(request));
     if (!entry) return notFound(reply);
-    return { ...toSummary(entry), mcpPath: `/servers/${entry.slug}/mcp` };
+    // Include the security schemes so the dashboard can render a credentials
+    // form. Only names/types are exposed — never stored secret values.
+    const securitySchemes = Object.values(entry.generated.securitySchemes).map((s) => ({
+      name: s.name,
+      type: s.type,
+      detail: s.type === "apiKey" ? `${s.in}:${s.paramName}` : s.scheme,
+    }));
+    return { ...toSummary(entry), mcpPath: `/servers/${entry.slug}/mcp`, securitySchemes };
   });
 
   app.get("/servers/:id/tools", async (request, reply) => {
