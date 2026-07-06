@@ -212,6 +212,21 @@ curl -X POST localhost:4000/servers \
 | `DELETE /servers/:id` | Remove a server |
 | `ALL /servers/:id/mcp` | The hosted MCP endpoint agents connect to |
 
+**OAuth2 (act on behalf of end users):** for servers whose spec declares an
+`oauth2` authorization-code scheme, the control plane runs the full flow —
+configure the client, redirect the user to consent, exchange the code (with
+PKCE), and inject the access token into upstream calls. Tokens are encrypted at
+rest (requires `MCPIFY_SECRET_KEY`) and **auto-refreshed on a 401**. Drive it
+from the dashboard's Credentials tab, or the API:
+
+```
+POST /servers/:id/oauth/:scheme/config      {clientId, clientSecret?, ...}
+GET  /servers/:id/oauth/:scheme/authorize   → 302 to the provider
+GET  /oauth/callback?code&state             → exchanges + stores tokens
+GET  /servers/:id/oauth                      → connection status per scheme
+POST /servers/:id/oauth/:scheme/refresh      → force a token refresh
+```
+
 Server records **persist to SQLite** — on restart, `mcpify serve` rehydrates
 each server by re-ingesting its spec, so your servers survive a reboot:
 
@@ -255,8 +270,9 @@ Restart Claude Desktop and the API's endpoints appear as callable tools.
 ## Authentication
 
 Credentials are resolved per security scheme and injected at request time —
-agents never see them. Supported schemes: **Bearer**, **Basic**, and
-**API Key** (header / query / cookie).
+agents never see them. Supported schemes: **Bearer**, **Basic**,
+**API Key** (header / query / cookie), and **OAuth2** (authorization-code flow —
+see below).
 
 Provide credentials by environment variable (preferred) or `--auth` flag:
 
@@ -324,8 +340,10 @@ src/
   runtime/watch.ts      Poll a spec and fire on change (live sync)
   runtime/transport.ts  stdio + Streamable HTTP transports
   controlplane/registry.ts  Registry of generated servers (+ rehydrate)
-  controlplane/store.ts     Durable server records + creds (SQLite)
+  controlplane/store.ts     Durable records + creds + OAuth tokens (SQLite)
   controlplane/vault.ts     AES-256-GCM credential encryption
+  controlplane/oauth.ts     OAuth2 authorization-code primitives (PKCE)
+  controlplane/oauth-manager.ts  OAuth config/tokens + refresh + inject
   controlplane/api.ts       Fastify REST API + hosted MCP endpoints
   controlplane/dashboard.html  Self-contained dashboard page
   controlplane/seed.ts      Prebuilt server anchors (seed a manifest)
@@ -346,6 +364,8 @@ diff, and hot-reload tools without dropping connections), and a control-plane
 REST API (`mcpify serve`) that hosts many servers and their MCP endpoints, with
 **durable server records** (servers survive a restart), **credential encryption
 at rest** (AES-256-GCM via `MCPIFY_SECRET_KEY`), a **dashboard** served at `/`
-(with a credentials form), and **spec auto-discovery** (`--discover`). Not yet
-built here: multi-tenant deployment and the OAuth2 authorization-code flow. The
-code is structured so each of these layers on top of the existing pipeline.
+(with a credentials form), **spec auto-discovery** (`--discover`), and the
+**OAuth2 authorization-code flow** (PKCE, encrypted tokens, auto-refresh). Not
+yet built here: multi-tenant deployment, team workspaces, and the public MCP
+marketplace. The code is structured so each of these layers on top of the
+existing pipeline.
