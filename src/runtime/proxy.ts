@@ -7,6 +7,12 @@ export interface ProxyContext {
   creds: CredentialStore;
   /** Optional hook for request/response logging (the Usage Logs feature). */
   onLog?: (entry: RequestLog) => void;
+  /**
+   * Called with the tool's OAuth2 scheme names after a 401, to refresh the
+   * access token(s). Returning true means a token was refreshed (creds updated
+   * in place), so the call is retried once. Enables OAuth token auto-refresh.
+   */
+  onUnauthorized?: (oauthSchemes: string[]) => Promise<boolean>;
 }
 
 export interface RequestLog {
@@ -51,14 +57,29 @@ export async function executeTool(
   const start = performance.now();
   let url = "";
   try {
-    const built = buildRequest(tool, args, ctx);
+    let built = buildRequest(tool, args, ctx);
     url = built.url.toString();
 
-    const response = await fetch(built.url, {
+    let response = await fetch(built.url, {
       method: tool.method,
       headers: built.headers,
       body: built.body,
     });
+
+    // On a 401 for an OAuth2-secured tool, refresh the token and retry once.
+    if (response.status === 401 && ctx.onUnauthorized) {
+      const oauthSchemes = tool.security.filter(
+        (s) => ctx.schemes[s]?.type === "oauth2",
+      );
+      if (oauthSchemes.length && (await ctx.onUnauthorized(oauthSchemes))) {
+        built = buildRequest(tool, args, ctx); // creds updated in place by refresh
+        response = await fetch(built.url, {
+          method: tool.method,
+          headers: built.headers,
+          body: built.body,
+        });
+      }
+    }
 
     const contentType = response.headers.get("content-type");
     const body = await response.text();

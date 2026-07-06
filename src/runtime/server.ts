@@ -17,6 +17,8 @@ export interface RuntimeOptions {
   creds: CredentialStore;
   /** Optional request/response log sink (Usage Logs). */
   onLog?: (entry: RequestLog) => void;
+  /** Refresh OAuth tokens on a 401 and signal whether to retry (see ProxyContext). */
+  onUnauthorized?: (oauthSchemes: string[]) => Promise<boolean>;
 }
 
 /** A live MCP server that can hot-reload its tools when the spec changes. */
@@ -61,6 +63,7 @@ export function createReloadableServer(
     schemes: generated.securitySchemes,
     creds: opts.creds,
     onLog: opts.onLog,
+    onUnauthorized: opts.onUnauthorized,
   };
 
   const registered = new Map<string, RegisteredTool>();
