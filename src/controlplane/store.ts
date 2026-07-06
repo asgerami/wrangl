@@ -44,6 +44,12 @@ const SCHEMA = `
     value_enc   TEXT NOT NULL,
     PRIMARY KEY (server_id, scheme)
   );
+  CREATE TABLE IF NOT EXISTS oauth (
+    server_id   TEXT NOT NULL,
+    scheme      TEXT NOT NULL,
+    data_enc    TEXT NOT NULL,
+    PRIMARY KEY (server_id, scheme)
+  );
 `;
 
 export class ServerStore {
@@ -94,6 +100,7 @@ export class ServerStore {
   delete(id: string): void {
     this.db.prepare(`DELETE FROM servers WHERE id = ?`).run(id);
     this.db.prepare(`DELETE FROM credentials WHERE server_id = ?`).run(id);
+    this.db.prepare(`DELETE FROM oauth WHERE server_id = ?`).run(id);
   }
 
   /** Store an already-encrypted credential envelope for a server scheme. */
@@ -113,6 +120,26 @@ export class ServerStore {
       .all(serverId) as unknown as Array<{ scheme: string; value_enc: string }>;
     const out: Record<string, string> = {};
     for (const r of rows) out[r.scheme] = r.value_enc;
+    return out;
+  }
+
+  /** Store an encrypted OAuth state blob (config + tokens) for a scheme. */
+  setOAuth(serverId: string, scheme: string, dataEnc: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO oauth (server_id, scheme, data_enc) VALUES (?, ?, ?)
+         ON CONFLICT(server_id, scheme) DO UPDATE SET data_enc = excluded.data_enc`,
+      )
+      .run(serverId, scheme, dataEnc);
+  }
+
+  /** All encrypted OAuth blobs for a server, keyed by scheme. */
+  oauthFor(serverId: string): Record<string, string> {
+    const rows = this.db
+      .prepare(`SELECT scheme, data_enc FROM oauth WHERE server_id = ?`)
+      .all(serverId) as unknown as Array<{ scheme: string; data_enc: string }>;
+    const out: Record<string, string> = {};
+    for (const r of rows) out[r.scheme] = r.data_enc;
     return out;
   }
 
