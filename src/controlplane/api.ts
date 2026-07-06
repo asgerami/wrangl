@@ -17,6 +17,14 @@ import type { OAuthManager, OAuthConfigInput } from "./oauth-manager.js";
 export interface ControlPlaneOptions {
   /** Enables the OAuth2 authorization-code endpoints when provided. */
   oauth?: OAuthManager;
+  /**
+   * When set, the management API (everything except the dashboard shell, health,
+   * the OAuth callback, and the hosted MCP endpoints) requires
+   * `Authorization: Bearer <adminToken>`.
+   */
+  adminToken?: string;
+  /** Per-server request limit per minute on the hosted MCP endpoint (0 = off). */
+  rateLimitPerMin?: number;
 }
 
 export function buildControlPlane(
@@ -25,9 +33,22 @@ export function buildControlPlane(
 ): FastifyInstance {
   const app = Fastify({ logger: false });
   const oauth = opts.oauth;
+  const rateLimiter = new RateLimiter(opts.rateLimitPerMin ?? 0);
 
   // Per-server map of MCP session id → transport, for the hosted endpoint.
   const sessionsByServer = new Map<string, Map<string, StreamableHTTPServerTransport>>();
+
+  // Gate the management API behind the admin token. Public routes (the dashboard
+  // shell, health, the OAuth callback, and the token-gated MCP endpoints) are
+  // exempt — see isPublicRoute.
+  if (opts.adminToken) {
+    app.addHook("onRequest", async (request, reply) => {
+      if (isPublicRoute(request.url)) return;
+      if (request.headers.authorization !== `Bearer ${opts.adminToken}`) {
+        return reply.code(401).send({ error: "Unauthorized: admin token required." });
+      }
+    });
+  }
 
   app.get("/health", async () => ({ status: "ok" }));
 
@@ -59,7 +80,13 @@ export function buildControlPlane(
         baseUrl: body.baseUrl,
         auth: body.auth,
       });
-      return reply.code(201).send({ ...toSummary(entry), mcpPath: `/servers/${entry.slug}/mcp` });
+      return reply.code(201).send({
+        ...toSummary(entry),
+        mcpPath: `/servers/${entry.slug}/mcp`,
+        // Returned once here (and on detail) so the operator can hand it to an
+        // agent — required as a Bearer token on the hosted MCP endpoint.
+        mcpToken: entry.mcpToken,
+      });
     } catch (err) {
       return reply.code(400).send({ error: errMessage(err) });
     }
@@ -82,7 +109,12 @@ export function buildControlPlane(
             ? s.scheme
             : (s.scopes.join(" ") || "authorization_code"),
     }));
-    return { ...toSummary(entry), mcpPath: `/servers/${entry.slug}/mcp`, securitySchemes };
+    return {
+      ...toSummary(entry),
+      mcpPath: `/servers/${entry.slug}/mcp`,
+      mcpToken: entry.mcpToken,
+      securitySchemes,
+    };
   });
 
   app.get("/servers/:id/tools", async (request, reply) => {
@@ -161,13 +193,15 @@ export function buildControlPlane(
     }
   });
 
-  // Redirect the user's browser to the provider's consent screen.
+  // Return the provider consent URL as JSON (so it stays behind admin auth —
+  // a browser redirect can't carry the Authorization header). The dashboard
+  // fetches this, then opens the returned URL.
   app.get("/servers/:id/oauth/:scheme/authorize", async (request, reply) => {
     if (!oauth) return oauthDisabled(reply);
     const id = idParam(request);
     if (!registry.get(id)) return notFound(reply);
     try {
-      return reply.redirect(oauth.startAuthorization(id, schemeParam(request)));
+      return { url: oauth.startAuthorization(id, schemeParam(request)) };
     } catch (err) {
       return reply.code(400).send({ error: errMessage(err) });
     }
@@ -210,6 +244,16 @@ export function buildControlPlane(
     const entry = registry.get(id);
     if (!entry) return notFound(reply);
 
+    // Per-server Bearer token: this endpoint proxies calls using stored
+    // credentials, so it must not be open to anyone who knows the URL.
+    if (request.headers.authorization !== `Bearer ${entry.mcpToken}`) {
+      return reply.code(401).send({ error: "Unauthorized: server MCP token required." });
+    }
+    // Per-server rate limit to bound cost/abuse on the public proxy.
+    if (!rateLimiter.allow(id)) {
+      return reply.code(429).send({ error: "Rate limit exceeded for this server." });
+    }
+
     const sessions = sessionsByServer.get(id) ?? new Map();
     sessionsByServer.set(id, sessions);
 
@@ -248,6 +292,33 @@ export function buildControlPlane(
   });
 
   return app;
+}
+
+/** Routes exempt from admin auth (shell, health, OAuth callback, MCP endpoints). */
+function isPublicRoute(url: string): boolean {
+  const path = url.split("?")[0];
+  if (path === "/" || path === "/health" || path === "/oauth/callback") return true;
+  // Hosted MCP endpoints have their own per-server token check.
+  return /^\/servers\/[^/]+\/mcp$/.test(path);
+}
+
+/** Fixed-window (per-minute) per-key request limiter, in memory. */
+class RateLimiter {
+  private hits = new Map<string, { count: number; windowStart: number }>();
+  constructor(private readonly perMin: number) {}
+
+  allow(key: string): boolean {
+    if (this.perMin <= 0) return true; // disabled
+    const now = Date.now();
+    const rec = this.hits.get(key);
+    if (!rec || now - rec.windowStart >= 60_000) {
+      this.hits.set(key, { count: 1, windowStart: now });
+      return true;
+    }
+    if (rec.count >= this.perMin) return false;
+    rec.count++;
+    return true;
+  }
 }
 
 function idParam(request: FastifyRequest): string {
