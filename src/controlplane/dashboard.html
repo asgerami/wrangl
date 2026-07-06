@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MCPify · Control Plane</title>
+<style>
+  :root {
+    --bg: #f7f7f8; --panel: #ffffff; --border: #e5e5ea; --text: #1d1d1f;
+    --muted: #6e6e73; --accent: #2f6df6; --accent-fg: #ffffff;
+    --ok: #1a7f37; --err: #c62828; --code-bg: #f0f0f2; --shadow: rgba(0,0,0,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1a1a1c; --panel: #242426; --border: #3a3a3d; --text: #f2f2f4;
+      --muted: #9a9aa0; --accent: #4d8bff; --accent-fg: #0b0b0c;
+      --ok: #4ac66b; --err: #ff6b6b; --code-bg: #2c2c30; --shadow: rgba(0,0,0,.3);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 14px 20px;
+    border-bottom: 1px solid var(--border); background: var(--panel);
+    position: sticky; top: 0; z-index: 5;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: -.01em; }
+  header .badge {
+    font-size: 12px; color: var(--muted); background: var(--code-bg);
+    padding: 2px 8px; border-radius: 999px;
+  }
+  header .spacer { flex: 1; }
+  .layout { display: grid; grid-template-columns: 340px 1fr; gap: 16px; padding: 16px 20px; align-items: start; }
+  @media (max-width: 760px) { .layout { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: 0 1px 2px var(--shadow); overflow: hidden;
+  }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+    margin: 0; padding: 12px 14px; border-bottom: 1px solid var(--border); font-weight: 600; }
+  form { padding: 14px; display: grid; gap: 8px; }
+  label { font-size: 12px; color: var(--muted); }
+  input, textarea {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--bg); color: var(--text); font: inherit; font-size: 13px;
+  }
+  textarea { resize: vertical; min-height: 54px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  button {
+    font: inherit; font-size: 13px; font-weight: 500; cursor: pointer;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text);
+    padding: 7px 12px; border-radius: 8px;
+  }
+  button.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.ghost { background: transparent; }
+  ul.servers { list-style: none; margin: 0; padding: 6px; display: grid; gap: 4px; }
+  ul.servers li {
+    padding: 9px 11px; border-radius: 8px; cursor: pointer; border: 1px solid transparent;
+    display: flex; align-items: center; gap: 8px;
+  }
+  ul.servers li:hover { background: var(--bg); }
+  ul.servers li.active { background: var(--bg); border-color: var(--border); }
+  ul.servers .name { font-weight: 500; }
+  ul.servers .meta { color: var(--muted); font-size: 12px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; }
+  .detail { min-height: 300px; }
+  .detail .head { padding: 14px; border-bottom: 1px solid var(--border); }
+  .detail .head .title { font-size: 17px; font-weight: 600; }
+  .detail .head .sub { color: var(--muted); font-size: 12px; margin-top: 3px; word-break: break-all; }
+  .urlbar { display: flex; gap: 8px; margin-top: 10px; }
+  .urlbar code { flex: 1; background: var(--code-bg); padding: 7px 10px; border-radius: 8px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; overflow-x: auto; white-space: nowrap; }
+  .actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .tabs { display: flex; gap: 4px; padding: 10px 14px 0; }
+  .tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 6px 10px; color: var(--muted); background: none; }
+  .tabs button.active { color: var(--text); border-bottom-color: var(--accent); }
+  .tabpanel { padding: 8px 14px 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; }
+  td code { background: var(--code-bg); padding: 1px 6px; border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .method { font-weight: 700; font-size: 11px; }
+  .status-ok { color: var(--ok); font-weight: 600; }
+  .status-err { color: var(--err); font-weight: 600; }
+  .empty { color: var(--muted); padding: 40px 14px; text-align: center; }
+  .toast {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+    background: var(--text); color: var(--bg); padding: 9px 16px; border-radius: 999px;
+    font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 10;
+  }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>MCPify</h1>
+  <span class="badge" id="server-count">…</span>
+  <span class="spacer"></span>
+  <span class="badge">control plane</span>
+</header>
+
+<div class="layout">
+  <div style="display:grid; gap:16px;">
+    <div class="card">
+      <h2>New server</h2>
+      <form id="create-form">
+        <div>
+          <label for="f-spec">OpenAPI spec or Postman collection (URL or path)</label>
+          <textarea id="f-spec" placeholder="https://petstore3.swagger.io/api/v3/openapi.json" required></textarea>
+        </div>
+        <div>
+          <label for="f-name">Name (optional)</label>
+          <input id="f-name" placeholder="Petstore" />
+        </div>
+        <div>
+          <label for="f-base">Base URL override (optional)</label>
+          <input id="f-base" placeholder="https://api.example.com" />
+        </div>
+        <button type="submit" class="primary" id="create-btn">Create server</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>Servers</h2>
+      <ul class="servers" id="server-list"></ul>
+    </div>
+  </div>
+
+  <div class="card detail" id="detail">
+    <div class="empty">Select a server, or create one to get started.</div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+let selected = null;
+let activeTab = "tools";
+
+function toast(msg) {
+  const t = $("#toast");
+  t.textContent = msg; t.classList.add("show");
+  clearTimeout(t._timer); t._timer = setTimeout(() => t.classList.remove("show"), 1800);
+}
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  const type = res.headers.get("content-type") || "";
+  const body = type.includes("json") ? await res.json() : await res.text();
+  if (!res.ok) throw new Error((body && body.error) || ("HTTP " + res.status));
+  return body;
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+async function loadServers() {
+  const servers = await api("/servers");
+  $("#server-count").textContent = servers.length + (servers.length === 1 ? " server" : " servers");
+  const list = $("#server-list");
+  if (!servers.length) { list.innerHTML = '<li class="meta" style="cursor:default">No servers yet.</li>'; return; }
+  list.innerHTML = servers.map((s) => `
+    <li data-id="${esc(s.id)}" class="${s.id === selected ? "active" : ""}">
+      <span class="dot"></span>
+      <span style="flex:1; min-width:0">
+        <div class="name">${esc(s.name)}</div>
+        <div class="meta">${s.toolCount} tools · ${esc(s.slug)}</div>
+      </span>
+    </li>`).join("");
+  list.querySelectorAll("li[data-id]").forEach((li) =>
+    li.addEventListener("click", () => selectServer(li.dataset.id)));
+}
+
+async function selectServer(id) {
+  selected = id;
+  await loadServers();
+  const s = await api("/servers/" + id);
+  const mcpUrl = location.origin + s.mcpPath;
+  $("#detail").innerHTML = `
+    <div class="head">
+      <div class="title">${esc(s.name)}</div>
+      <div class="sub">${esc(s.baseUrl)} · ${s.toolCount} tools · spec ${esc(s.specHash)}</div>
+      <div class="urlbar">
+        <code id="mcp-url">${esc(mcpUrl)}</code>
+        <button id="copy-url">Copy MCP URL</button>
+      </div>
+      <div class="actions">
+        <button id="regen-btn" class="ghost">Regenerate</button>
+        <button id="del-btn" class="ghost" style="color:var(--err)">Delete</button>
+      </div>
+    </div>
+    <div class="tabs">
+      <button data-tab="tools" class="${activeTab === "tools" ? "active" : ""}">Tools</button>
+      <button data-tab="logs" class="${activeTab === "logs" ? "active" : ""}">Logs</button>
+    </div>
+    <div class="tabpanel" id="tabpanel"></div>`;
+
+  $("#copy-url").addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(mcpUrl); toast("MCP URL copied"); }
+    catch { toast("Copy failed — select manually"); }
+  });
+  $("#regen-btn").addEventListener("click", () => regenerate(id));
+  $("#del-btn").addEventListener("click", () => removeServer(id, s.name));
+  $("#detail").querySelectorAll(".tabs button").forEach((b) =>
+    b.addEventListener("click", () => { activeTab = b.dataset.tab; selectServer(id); }));
+
+  renderTab(id);
+}
+
+async function renderTab(id) {
+  const panel = $("#tabpanel");
+  panel.innerHTML = '<div class="empty">Loading…</div>';
+  try {
+    if (activeTab === "tools") {
+      const tools = await api("/servers/" + id + "/tools");
+      panel.innerHTML = tools.length ? `<table>
+        <thead><tr><th>Tool</th><th>Method</th><th>Path</th><th>Auth</th></tr></thead>
+        <tbody>${tools.map((t) => `<tr>
+          <td><code>${esc(t.name)}</code><div class="meta">${esc(t.description || "")}</div></td>
+          <td><span class="method">${esc(t.method)}</span></td>
+          <td><code>${esc(t.path)}</code></td>
+          <td>${t.security && t.security.length ? "🔒 " + esc(t.security.join(", ")) : "—"}</td>
+        </tr>`).join("")}</tbody></table>` : '<div class="empty">No tools.</div>';
+    } else {
+      const logs = await api("/servers/" + id + "/logs?limit=100");
+      panel.innerHTML = logs.length ? `<table>
+        <thead><tr><th>Time</th><th>Status</th><th>Tool</th><th>Latency</th></tr></thead>
+        <tbody>${logs.map((l) => `<tr>
+          <td class="meta">${new Date(l.timestamp).toLocaleTimeString()}</td>
+          <td class="${l.error ? "status-err" : "status-ok"}">${l.error ? "ERR" : l.status_code}</td>
+          <td><code>${esc(l.tool)}</code> <span class="meta">${esc(l.method)}</span></td>
+          <td class="meta">${l.latency_ms}ms</td>
+        </tr>`).join("")}</tbody></table>` : '<div class="empty">No calls logged yet.</div>';
+    }
+  } catch (e) { panel.innerHTML = '<div class="empty">' + esc(e.message) + "</div>"; }
+}
+
+async function regenerate(id) {
+  try {
+    const { summary } = await api("/servers/" + id + "/regenerate", { method: "POST" });
+    toast("Regenerated: " + summary.split("\n")[0]);
+    selectServer(id);
+  } catch (e) { toast(e.message); }
+}
+
+async function removeServer(id, name) {
+  if (!confirm('Delete server "' + name + '"?')) return;
+  try {
+    await fetch("/servers/" + id, { method: "DELETE" });
+    selected = null;
+    $("#detail").innerHTML = '<div class="empty">Server deleted.</div>';
+    loadServers();
+    toast("Deleted");
+  } catch (e) { toast(e.message); }
+}
+
+$("#create-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = $("#create-btn");
+  btn.disabled = true; btn.textContent = "Creating…";
+  try {
+    const payload = { spec: $("#f-spec").value.trim() };
+    if ($("#f-name").value.trim()) payload.name = $("#f-name").value.trim();
+    if ($("#f-base").value.trim()) payload.baseUrl = $("#f-base").value.trim();
+    const created = await api("/servers", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+    });
+    $("#f-spec").value = ""; $("#f-name").value = ""; $("#f-base").value = "";
+    toast('Created "' + created.name + '"');
+    await selectServer(created.id);
+  } catch (e) { toast(e.message); }
+  finally { btn.disabled = false; btn.textContent = "Create server"; }
+});
+
+loadServers().catch((e) => toast(e.message));
+</script>
+</body>
+</html>

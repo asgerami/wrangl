@@ -12,7 +12,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp src/controlplane/dashboard.html dist/controlplane/dashboard.html",
     "dev": "tsx src/cli.ts",
     "start": "node dist/cli.js",
     "test": "node --test --import tsx ./test/*.test.ts",

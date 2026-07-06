@@ -3,6 +3,7 @@ import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply }
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpServer } from "../runtime/server.js";
 import { formatDiff } from "../generator/diff.js";
+import { DASHBOARD_HTML } from "./dashboard.js";
 import { ServerRegistry, toSummary, type CreateServerInput } from "./registry.js";
 
 /**
@@ -18,6 +19,9 @@ export function buildControlPlane(registry: ServerRegistry): FastifyInstance {
   const sessionsByServer = new Map<string, Map<string, StreamableHTTPServerTransport>>();
 
   app.get("/health", async () => ({ status: "ok" }));
+
+  // The dashboard (single self-contained page) drives the API below.
+  app.get("/", async (_request, reply) => reply.type("text/html").send(DASHBOARD_HTML));
 
   // Create a server from a spec.
   app.post("/servers", async (request, reply) => {
