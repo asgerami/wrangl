@@ -63,6 +63,7 @@ mcpify serve --seed          # → http://localhost:4000
 mcpify generate --spec <url|file> [options]
 
   -s, --spec <source>     OpenAPI 3.x spec or Postman collection: a URL or file
+  -d, --discover <url>    Auto-discover the spec by probing a base URL
   -b, --base-url <url>    Upstream base URL (overrides the spec's `servers`)
   -t, --transport <type>  stdio | http              (default: stdio)
   -p, --port <number>     Port for the http transport (default: 3000)
@@ -110,6 +111,18 @@ mcpify generate --spec examples/jsonplaceholder.yaml --enrich --model claude-son
 
 Defaults to `claude-opus-4-8`; pass `--model claude-sonnet-4-6` to match the
 model named in the product spec. Honors `ANTHROPIC_BASE_URL` for gateways.
+
+### Spec auto-discovery
+
+Don't have the spec URL handy? Point at the API's **base URL** and MCPify probes
+the well-known locations (`/openapi.json`, `/swagger.json`, `/v3/api-docs`, …)
+to find it:
+
+```bash
+mcpify inspect  --discover https://api.example.com
+mcpify generate --discover https://api.example.com
+# the control plane accepts it too:  POST /servers  {"discover":"https://api.example.com"}
+```
 
 ### Usage logs
 
@@ -163,7 +176,8 @@ exported for programmatic use.
 at once and hosts each as a live MCP endpoint at `/servers/:id/mcp` (Streamable
 HTTP). It also serves a **dashboard** at `/` — a single self-contained page (no
 build step, no external assets) to create servers, inspect their tools, browse
-usage logs, copy MCP URLs, regenerate, and delete:
+usage logs, **set credentials per security scheme**, copy MCP URLs, regenerate,
+and delete:
 
 ```bash
 mcpify serve --port 4000
@@ -188,7 +202,7 @@ curl -X POST localhost:4000/servers \
 
 | Method & path | Purpose |
 |---|---|
-| `POST /servers` | Create a server from a spec (`{spec, name?, baseUrl?, auth?}`) |
+| `POST /servers` | Create from a spec or discover one (`{spec \| discover, name?, baseUrl?, auth?}`) |
 | `GET /servers` | List servers |
 | `GET /servers/:id` | Server details |
 | `GET /servers/:id/tools` | Generated tools |
@@ -298,6 +312,7 @@ subprocess over stdio.
 src/
   parser/openapi.ts     Ingestion: load, validate, normalize a spec
   parser/postman.ts     Postman collection → canonical OpenAPI
+  parser/discover.ts    Auto-discover a spec under a base URL
   generator/tools.ts    Map endpoints → MCP tool definitions
   generator/schema.ts   JSON Schema → Zod input/output shapes
   generator/enrich.ts   LLM semantic-enrichment pass (Claude, structured output)
@@ -330,7 +345,7 @@ usage logs (`--log-db` + `mcpify logs`), live spec sync (`--watch`: re-ingest,
 diff, and hot-reload tools without dropping connections), and a control-plane
 REST API (`mcpify serve`) that hosts many servers and their MCP endpoints, with
 **durable server records** (servers survive a restart), **credential encryption
-at rest** (AES-256-GCM via `MCPIFY_SECRET_KEY`), and a **dashboard** served at
-`/`. Not yet built here: multi-tenant deployment, OAuth2 authorization-code
-flow, and spec auto-discovery. The code is structured so each of these layers on
-top of the existing pipeline.
+at rest** (AES-256-GCM via `MCPIFY_SECRET_KEY`), a **dashboard** served at `/`
+(with a credentials form), and **spec auto-discovery** (`--discover`). Not yet
+built here: multi-tenant deployment and the OAuth2 authorization-code flow. The
+code is structured so each of these layers on top of the existing pipeline.
