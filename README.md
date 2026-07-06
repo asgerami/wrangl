@@ -78,10 +78,14 @@ mcpify inspect --spec <url|file> [--json] [--enrich]
   Parse a spec and print the generated tools without serving.
 
 mcpify serve [options]            # control-plane API + dashboard hosting many servers
-  -p, --port <number>     Port to listen on (default 4000)
-  -H, --host <host>       Host to bind (default 127.0.0.1)
-  -l, --log-db [path]     Usage-log SQLite file (default .mcpify/logs.db)
-  -S, --seed [manifest]   Seed prebuilt server anchors (default: bundled)
+  -p, --port <number>       Port to listen on (default 4000)
+  -H, --host <host>         Host to bind (default 127.0.0.1; use 0.0.0.0 in a container)
+  -l, --log-db [path]       Usage-log SQLite file (default .mcpify/logs.db)
+  -S, --seed [manifest]     Seed prebuilt server anchors (default: bundled)
+  -u, --public-url <url>    Public base URL for OAuth callbacks (env MCPIFY_PUBLIC_URL)
+  -a, --admin-token <token> Require this Bearer token on the management API
+                            (env MCPIFY_ADMIN_TOKEN)
+  -r, --rate-limit <perMin> Per-server req/min limit on the MCP endpoint (0 = off)
 
 mcpify logs [options]
   -d, --db [path]         Log database path (default .mcpify/logs.db)
@@ -210,7 +214,7 @@ curl -X POST localhost:4000/servers \
 | `POST /servers/:id/regenerate` | Re-ingest the spec and diff the tools |
 | `POST /servers/:id/credentials` | Set a credential (`{scheme, value}`) |
 | `DELETE /servers/:id` | Remove a server |
-| `ALL /servers/:id/mcp` | The hosted MCP endpoint agents connect to |
+| `ALL /servers/:id/mcp` | Hosted MCP endpoint — requires the server's Bearer token |
 
 **OAuth2 (act on behalf of end users):** for servers whose spec declares an
 `oauth2` authorization-code scheme, the control plane runs the full flow —
@@ -226,6 +230,28 @@ GET  /oauth/callback?code&state             → exchanges + stores tokens
 GET  /servers/:id/oauth                      → connection status per scheme
 POST /servers/:id/oauth/:scheme/refresh      → force a token refresh
 ```
+
+**Securing a deployment.** The control plane stores and *proxies* credentials,
+so lock it down before exposing it beyond localhost:
+
+- **Admin token** — set `MCPIFY_ADMIN_TOKEN` (or `--admin-token`) to require
+  `Authorization: Bearer <token>` on the whole management API. The dashboard
+  shell, `/health`, the OAuth callback, and the hosted MCP endpoints stay public
+  (the MCP endpoints have their own per-server token). `serve` warns loudly if
+  you bind a non-local host without a token.
+- **Per-server MCP token** — each server gets a random Bearer token at creation
+  (returned by `POST /servers` and shown in the dashboard). Agents must send it
+  as `Authorization: Bearer <token>` to `/servers/:id/mcp`, so knowing the URL
+  isn't enough to use someone's stored credentials.
+- **Public URL** — behind TLS/a proxy, set `MCPIFY_PUBLIC_URL` (or
+  `--public-url`) so OAuth `redirect_uri`s use your real `https://` origin.
+- **Rate limiting** — `--rate-limit <perMin>` caps requests per server on the
+  MCP endpoint to bound cost/abuse.
+- **Encryption key** — set `MCPIFY_SECRET_KEY` so credentials and OAuth tokens
+  are encrypted at rest (and OAuth is enabled).
+
+Bind `0.0.0.0`, terminate TLS at a reverse proxy (Caddy/nginx), and mount a
+volume for the SQLite file. `SIGTERM`/`SIGINT` shut down gracefully.
 
 Server records **persist to SQLite** — on restart, `mcpify serve` rehydrates
 each server by re-ingesting its spec, so your servers survive a reboot:
