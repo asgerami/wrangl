@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { ingest } from "../parser/openapi.js";
 import { diffTools, type SpecDiff } from "../generator/diff.js";
 import { LogStore, type LogQuery, type LogRow } from "../runtime/logstore.js";
@@ -35,6 +35,8 @@ export interface ServerEntry {
   createdAt: number;
   generated: GeneratedServer;
   creds: CredentialStore;
+  /** Bearer token an agent must present to call this server's MCP endpoint. */
+  mcpToken: string;
 }
 
 /** Public summary of a server (no internals like the full tool list). */
@@ -110,9 +112,12 @@ export class ServerRegistry {
           baseUrl: record.baseUrl,
           slug: record.slug,
           createdAt: record.createdAt,
+          mcpToken: record.mcpToken,
         });
         this.restoreCredentials(entry); // decrypt persisted creds over env-derived
         this.entries.set(entry.slug, entry);
+        // Backfill a token for servers created before this feature existed.
+        if (!record.mcpToken) this.serverStore?.upsert(toRecord(entry));
         restored++;
       } catch (err) {
         failed.push({ id: record.id, error: err instanceof Error ? err.message : String(err) });
@@ -133,6 +138,7 @@ export class ServerRegistry {
     slug?: string;
     createdAt: number;
     auth?: CredentialStore;
+    mcpToken?: string;
   }): Promise<ServerEntry> {
     const generated = await ingest(input.spec, { baseUrl: input.baseUrl });
     const name = input.name ?? generated.name;
@@ -152,6 +158,7 @@ export class ServerRegistry {
       createdAt: input.createdAt,
       generated,
       creds,
+      mcpToken: input.mcpToken ?? generateToken(),
     };
   }
 
@@ -257,7 +264,13 @@ function toRecord(entry: ServerEntry): ServerRecord {
     specSource: entry.specSource,
     baseUrl: entry.baseUrl,
     createdAt: entry.createdAt,
+    mcpToken: entry.mcpToken,
   };
+}
+
+/** A URL-safe random Bearer token for a hosted MCP endpoint. */
+function generateToken(): string {
+  return randomBytes(24).toString("base64url");
 }
 
 function slugify(name: string): string {

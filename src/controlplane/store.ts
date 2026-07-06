@@ -18,6 +18,8 @@ export interface ServerRecord {
   specSource: string;
   baseUrl: string;
   createdAt: number;
+  /** Per-server Bearer token required to call the hosted MCP endpoint. */
+  mcpToken?: string;
 }
 
 interface Row {
@@ -27,6 +29,7 @@ interface Row {
   spec_source: string;
   base_url: string;
   created_at: number;
+  mcp_token: string | null;
 }
 
 const SCHEMA = `
@@ -36,7 +39,8 @@ const SCHEMA = `
     slug        TEXT NOT NULL,
     spec_source TEXT NOT NULL,
     base_url    TEXT NOT NULL,
-    created_at  INTEGER NOT NULL
+    created_at  INTEGER NOT NULL,
+    mcp_token   TEXT
   );
   CREATE TABLE IF NOT EXISTS credentials (
     server_id   TEXT NOT NULL,
@@ -64,6 +68,11 @@ export class ServerStore {
     const db = new DatabaseSync(path);
     db.exec("PRAGMA journal_mode = WAL;");
     db.exec(SCHEMA);
+    // Migrate databases created before the per-server MCP token existed.
+    const cols = db.prepare("PRAGMA table_info(servers)").all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "mcp_token")) {
+      db.exec("ALTER TABLE servers ADD COLUMN mcp_token TEXT");
+    }
     return new ServerStore(db);
   }
 
@@ -71,13 +80,14 @@ export class ServerStore {
   upsert(record: ServerRecord): void {
     this.db
       .prepare(
-        `INSERT INTO servers (id, name, slug, spec_source, base_url, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)
+        `INSERT INTO servers (id, name, slug, spec_source, base_url, created_at, mcp_token)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name,
            slug = excluded.slug,
            spec_source = excluded.spec_source,
-           base_url = excluded.base_url`,
+           base_url = excluded.base_url,
+           mcp_token = excluded.mcp_token`,
       )
       .run(
         record.id,
@@ -86,6 +96,7 @@ export class ServerStore {
         record.specSource,
         record.baseUrl,
         record.createdAt,
+        record.mcpToken ?? null,
       );
   }
 
@@ -156,5 +167,6 @@ function fromRow(row: Row): ServerRecord {
     specSource: row.spec_source,
     baseUrl: row.base_url,
     createdAt: row.created_at,
+    mcpToken: row.mcp_token ?? undefined,
   };
 }
