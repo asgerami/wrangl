@@ -9,17 +9,28 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "prebuilt"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/asgerami/mcpify.git"
+  },
+  "homepage": "https://github.com/asgerami/mcpify#readme",
+  "bugs": {
+    "url": "https://github.com/asgerami/mcpify/issues"
+  },
+  "author": "asgerami",
   "scripts": {
     "build": "tsc && cp src/controlplane/dashboard.html dist/controlplane/dashboard.html",
     "dev": "tsx src/cli.ts",
     "start": "node dist/cli.js",
     "test": "node --test --import tsx ./test/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepack": "npm run build"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "keywords": [
     "mcp",
