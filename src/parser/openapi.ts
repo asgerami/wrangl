@@ -133,8 +133,18 @@ function mapSecuritySchemes(api: OpenAPIDoc): Record<string, SecurityScheme> {
         paramName: raw.name,
         name,
       };
+    } else if (raw.type === "oauth2") {
+      // Prefer the authorization-code flow; fall back to any flow's tokenUrl.
+      const flow = raw.flows?.authorizationCode ?? Object.values(raw.flows ?? {})[0];
+      out[name] = {
+        type: "oauth2",
+        name,
+        authorizationUrl: raw.flows?.authorizationCode?.authorizationUrl,
+        tokenUrl: flow?.tokenUrl,
+        scopes: flow?.scopes ? Object.keys(flow.scopes) : [],
+      };
     }
-    // oauth2 / openIdConnect are intentionally skipped for the MVP runtime.
+    // openIdConnect is not modelled yet.
   }
   return out;
 }
@@ -164,6 +174,14 @@ export interface RawSecurityScheme {
   scheme?: string;
   in?: string;
   name?: string;
+  flows?: Record<string, RawOAuthFlow | undefined>;
+}
+
+export interface RawOAuthFlow {
+  authorizationUrl?: string;
+  tokenUrl?: string;
+  refreshUrl?: string;
+  scopes?: Record<string, string>;
 }
 
 export interface PathItem {

@@ -80,7 +80,15 @@ export interface GeneratedServer {
 /** Subset of OpenAPI security schemes we support today. */
 export type SecurityScheme =
   | { type: "http"; scheme: "bearer" | "basic"; name: string }
-  | { type: "apiKey"; in: "header" | "query" | "cookie"; paramName: string; name: string };
+  | { type: "apiKey"; in: "header" | "query" | "cookie"; paramName: string; name: string }
+  | {
+      type: "oauth2";
+      name: string;
+      /** Authorization-code flow endpoints, from the spec when present. */
+      authorizationUrl?: string;
+      tokenUrl?: string;
+      scopes: string[];
+    };
 
 /** A permissive JSON Schema shape; we only read the fields we map. */
 export interface JsonSchema {
