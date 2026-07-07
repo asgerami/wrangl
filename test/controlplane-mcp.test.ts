@@ -7,7 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ServerRegistry } from "../src/controlplane/registry.js";
 import { buildControlPlane } from "../src/controlplane/api.js";
-import { LogStore } from "../src/runtime/logstore.js";
+import { SqliteLogStore } from "../src/runtime/logstore.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SPEC = join(here, "..", "examples", "jsonplaceholder.yaml");
@@ -17,7 +17,7 @@ test(
   "hosted MCP endpoint serves tools and proxies a real call",
   { skip, timeout: 30_000 },
   async () => {
-    const registry = new ServerRegistry({ logStore: LogStore.open(":memory:") });
+    const registry = new ServerRegistry({ logStore: SqliteLogStore.open(":memory:") });
     const app = buildControlPlane(registry);
     await app.listen({ port: 0, host: "127.0.0.1" });
     const { port } = app.server.address() as AddressInfo;

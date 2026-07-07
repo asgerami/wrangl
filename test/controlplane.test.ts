@@ -6,13 +6,13 @@ import { createServer as createHttpServer, type Server } from "node:http";
 import { AddressInfo } from "node:net";
 import { ServerRegistry } from "../src/controlplane/registry.js";
 import { buildControlPlane } from "../src/controlplane/api.js";
-import { LogStore } from "../src/runtime/logstore.js";
+import { SqliteLogStore } from "../src/runtime/logstore.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SPEC = join(here, "..", "examples", "jsonplaceholder.yaml");
 
 function app() {
-  const registry = new ServerRegistry({ logStore: LogStore.open(":memory:") });
+  const registry = new ServerRegistry({ logStore: SqliteLogStore.open(":memory:") });
   return { registry, app: buildControlPlane(registry) };
 }
 

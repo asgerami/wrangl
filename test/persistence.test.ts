@@ -5,30 +5,30 @@ import { dirname, join } from "node:path";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
-import { ServerStore } from "../src/controlplane/store.js";
+import { SqliteServerStore } from "../src/controlplane/store.js";
 import { ServerRegistry } from "../src/controlplane/registry.js";
 import { Vault } from "../src/controlplane/vault.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SPEC = join(here, "..", "examples", "jsonplaceholder.yaml");
 
-test("ServerStore upserts, lists, and deletes records", () => {
-  const store = ServerStore.open(":memory:");
-  store.upsert({ id: "a", name: "A", slug: "a", specSource: "s1", baseUrl: "u1", createdAt: 1 });
-  store.upsert({ id: "b", name: "B", slug: "b", specSource: "s2", baseUrl: "u2", createdAt: 2 });
+test("ServerStore upserts, lists, and deletes records", async () => {
+  const store = SqliteServerStore.open(":memory:");
+  await store.upsert({ id: "a", name: "A", slug: "a", specSource: "s1", baseUrl: "u1", createdAt: 1 });
+  await store.upsert({ id: "b", name: "B", slug: "b", specSource: "s2", baseUrl: "u2", createdAt: 2 });
 
-  let all = store.all();
+  let all = await store.all();
   assert.deepEqual(all.map((r) => r.id), ["a", "b"]); // oldest first
 
   // Upsert on the same id updates in place rather than duplicating.
-  store.upsert({ id: "a", name: "A2", slug: "a", specSource: "s1b", baseUrl: "u1", createdAt: 1 });
-  all = store.all();
+  await store.upsert({ id: "a", name: "A2", slug: "a", specSource: "s1b", baseUrl: "u1", createdAt: 1 });
+  all = await store.all();
   assert.equal(all.length, 2);
   assert.equal(all.find((r) => r.id === "a")?.name, "A2");
 
-  store.delete("a");
-  assert.deepEqual(store.all().map((r) => r.id), ["b"]);
-  store.close();
+  await store.delete("a");
+  assert.deepEqual((await store.all()).map((r) => r.id), ["b"]);
+  await store.close();
 });
 
 test("a server created with a store survives a fresh registry (rehydrate)", async () => {
@@ -36,14 +36,14 @@ test("a server created with a store survives a fresh registry (rehydrate)", asyn
   const dbPath = join(dir, "cp.db");
 
   // First registry: create a server, then close the store.
-  const store1 = ServerStore.open(dbPath);
+  const store1 = SqliteServerStore.open(dbPath);
   const reg1 = new ServerRegistry({ serverStore: store1 });
   const created = await reg1.create({ spec: SPEC, name: "Persisted API" });
   assert.equal(created.slug, "persisted-api");
-  store1.close();
+  await store1.close();
 
   // Second registry on the same file: load() re-ingests the stored spec.
-  const store2 = ServerStore.open(dbPath);
+  const store2 = SqliteServerStore.open(dbPath);
   const reg2 = new ServerRegistry({ serverStore: store2 });
   const result = await reg2.load();
   assert.equal(result.restored, 1);
@@ -55,18 +55,18 @@ test("a server created with a store survives a fresh registry (rehydrate)", asyn
   assert.equal(list[0].toolCount, 4);
   // createdAt is preserved across the restart.
   assert.equal(list[0].createdAt, created.createdAt);
-  store2.close();
+  await store2.close();
 });
 
 test("credentials persist encrypted and are restored on rehydrate", async () => {
-  const store1 = ServerStore.open(":memory:");
+  const store1 = SqliteServerStore.open(":memory:");
   const key = randomBytes(32);
   const reg1 = new ServerRegistry({ serverStore: store1, vault: new Vault(key) });
   const entry = await reg1.create({ spec: SPEC, auth: { bearerAuth: "sk-secret" } });
-  reg1.setCredential(entry.id, "apiKeyAuth", "key-123");
+  await reg1.setCredential(entry.id, "apiKeyAuth", "key-123");
 
   // On disk, the value is an encrypted envelope, not the plaintext.
-  const stored = store1.credentialsFor(entry.id);
+  const stored = await store1.credentialsFor(entry.id);
   assert.match(stored.bearerAuth, /^v1:/);
   assert.ok(!JSON.stringify(stored).includes("sk-secret"));
 
@@ -76,11 +76,11 @@ test("credentials persist encrypted and are restored on rehydrate", async () => 
   assert.equal(result.restored, 1);
   assert.equal(reg2.get(entry.id)?.creds.bearerAuth, "sk-secret");
   assert.equal(reg2.get(entry.id)?.creds.apiKeyAuth, "key-123");
-  store1.close();
+  await store1.close();
 });
 
 test("a wrong key skips the credential but still loads the server", async () => {
-  const store = ServerStore.open(":memory:");
+  const store = SqliteServerStore.open(":memory:");
   const reg1 = new ServerRegistry({ serverStore: store, vault: new Vault(randomBytes(32)) });
   const entry = await reg1.create({ spec: SPEC, auth: { bearerAuth: "sk-secret" } });
 
@@ -88,31 +88,31 @@ test("a wrong key skips the credential but still loads the server", async () => 
   const result = await reg2.load();
   assert.equal(result.restored, 1); // server still loads
   assert.equal(reg2.get(entry.id)?.creds.bearerAuth, undefined); // bad cred skipped
-  store.close();
+  await store.close();
 });
 
 test("without a vault, credentials are not persisted", async () => {
-  const store = ServerStore.open(":memory:");
+  const store = SqliteServerStore.open(":memory:");
   const reg = new ServerRegistry({ serverStore: store }); // no vault
   const entry = await reg.create({ spec: SPEC, auth: { bearerAuth: "sk-secret" } });
-  assert.deepEqual(store.credentialsFor(entry.id), {});
-  store.close();
+  assert.deepEqual(await store.credentialsFor(entry.id), {});
+  await store.close();
 });
 
 test("removing a server deletes its persisted record", async () => {
-  const store = ServerStore.open(":memory:");
+  const store = SqliteServerStore.open(":memory:");
   const reg = new ServerRegistry({ serverStore: store });
   const entry = await reg.create({ spec: SPEC });
-  assert.equal(store.all().length, 1);
+  assert.equal((await store.all()).length, 1);
 
-  reg.remove(entry.id);
-  assert.equal(store.all().length, 0);
-  store.close();
+  await reg.remove(entry.id);
+  assert.equal((await store.all()).length, 0);
+  await store.close();
 });
 
 test("load reports specs it can't re-ingest without dropping them", async () => {
-  const store = ServerStore.open(":memory:");
-  store.upsert({
+  const store = SqliteServerStore.open(":memory:");
+  await store.upsert({
     id: "broken",
     name: "Broken",
     slug: "broken",
@@ -126,6 +126,6 @@ test("load reports specs it can't re-ingest without dropping them", async () => 
   assert.equal(result.failed.length, 1);
   assert.equal(result.failed[0].id, "broken");
   // The record is kept for a future boot, not silently dropped.
-  assert.equal(store.all().length, 1);
-  store.close();
+  assert.equal((await store.all()).length, 1);
+  await store.close();
 });

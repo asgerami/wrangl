@@ -7,7 +7,7 @@ import { writeFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ServerRegistry } from "../src/controlplane/registry.js";
-import { ServerStore } from "../src/controlplane/store.js";
+import { SqliteServerStore } from "../src/controlplane/store.js";
 import { Vault } from "../src/controlplane/vault.js";
 import { OAuthManager } from "../src/controlplane/oauth-manager.js";
 import { buildControlPlane } from "../src/controlplane/api.js";
@@ -69,7 +69,7 @@ async function tokenServer(): Promise<{ url: string; issued: string[]; close: ()
 
 test("OAuth flow: configure → authorize → callback injects a token; refresh + restore", async () => {
   const token = await tokenServer();
-  const store = ServerStore.open(":memory:");
+  const store = SqliteServerStore.open(":memory:");
   const vault = new Vault(randomBytes(32));
   const registry = new ServerRegistry({ serverStore: store, vault });
   const entry = await registry.create({ spec: await oauthSpec(token.url), name: "OA" });
@@ -81,12 +81,12 @@ test("OAuth flow: configure → authorize → callback injects a token; refresh 
 
   try {
     // Configure just the client id (URLs/scopes default from the spec).
-    manager.configure(entry.id, "userAuth", { clientId: "cid", clientSecret: "sec" });
-    assert.equal(manager.status(entry.id, "userAuth").configured, true);
-    assert.equal(manager.status(entry.id, "userAuth").connected, false);
+    await manager.configure(entry.id, "userAuth", { clientId: "cid", clientSecret: "sec" });
+    assert.equal((await manager.status(entry.id, "userAuth")).configured, true);
+    assert.equal((await manager.status(entry.id, "userAuth")).connected, false);
 
     // Begin authorization and capture the CSRF state from the URL.
-    const authorizeUrl = new URL(manager.startAuthorization(entry.id, "userAuth"));
+    const authorizeUrl = new URL(await manager.startAuthorization(entry.id, "userAuth"));
     assert.equal(authorizeUrl.origin + authorizeUrl.pathname, "https://provider.test/authorize");
     const state = authorizeUrl.searchParams.get("state")!;
     assert.ok(state);
@@ -97,7 +97,7 @@ test("OAuth flow: configure → authorize → callback injects a token; refresh 
 
     // The access token is now injected into the live credential store.
     assert.equal(entry.creds.userAuth, "at-1");
-    assert.equal(manager.status(entry.id, "userAuth").connected, true);
+    assert.equal((await manager.status(entry.id, "userAuth")).connected, true);
 
     // Refresh rotates the access token.
     assert.equal(await manager.refresh(entry.id, "userAuth"), true);
@@ -118,7 +118,7 @@ test("OAuth flow: configure → authorize → callback injects a token; refresh 
 
 test("control-plane OAuth endpoints: config → authorize redirect → callback", async () => {
   const token = await tokenServer();
-  const store = ServerStore.open(":memory:");
+  const store = SqliteServerStore.open(":memory:");
   const vault = new Vault(randomBytes(32));
   const registry = new ServerRegistry({ serverStore: store, vault });
   const entry = await registry.create({ spec: await oauthSpec(token.url), name: "OA" });
@@ -165,7 +165,7 @@ test("OAuth endpoints are 501 when no vault/manager is configured", async () => 
 });
 
 test("an unknown callback state is rejected", async () => {
-  const store = ServerStore.open(":memory:");
+  const store = SqliteServerStore.open(":memory:");
   const vault = new Vault(randomBytes(32));
   const registry = new ServerRegistry({ serverStore: store, vault });
   const manager = new OAuthManager({ registry, store, vault, callbackUrl: "http://x/cb" });
