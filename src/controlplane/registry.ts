@@ -1,9 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import { ingest } from "../parser/openapi.js";
 import { diffTools, type SpecDiff } from "../generator/diff.js";
-import { LogStore, type LogQuery, type LogRow } from "../runtime/logstore.js";
+import { type LogStore, type LogQuery, type LogRow } from "../runtime/logstore.js";
 import { loadCredentialsFromEnv, type CredentialStore } from "../runtime/auth.js";
-import { ServerStore, type ServerRecord } from "./store.js";
+import { type ServerStore, type ServerRecord } from "./store.js";
 import { Vault } from "./vault.js";
 import type { GeneratedServer, ToolDef } from "../types.js";
 
@@ -85,11 +85,11 @@ export class ServerRegistry {
       auth: input.auth,
     });
     this.entries.set(entry.slug, entry);
-    this.serverStore?.upsert(toRecord(entry));
+    await this.serverStore?.upsert(toRecord(entry));
     // Persist only explicitly-provided credentials (encrypted); env-derived
     // ones are re-derived on boot and need no storage.
     for (const [scheme, value] of Object.entries(input.auth ?? {})) {
-      this.persistCredential(entry.slug, scheme, value);
+      await this.persistCredential(entry.slug, scheme, value);
     }
     return entry;
   }
@@ -104,7 +104,7 @@ export class ServerRegistry {
     if (!this.serverStore) return { restored: 0, failed: [] };
     const failed: Array<{ id: string; error: string }> = [];
     let restored = 0;
-    for (const record of this.serverStore.all()) {
+    for (const record of await this.serverStore.all()) {
       try {
         const entry = await this.buildEntry({
           spec: record.specSource,
@@ -114,10 +114,10 @@ export class ServerRegistry {
           createdAt: record.createdAt,
           mcpToken: record.mcpToken,
         });
-        this.restoreCredentials(entry); // decrypt persisted creds over env-derived
+        await this.restoreCredentials(entry); // decrypt persisted creds over env-derived
         this.entries.set(entry.slug, entry);
         // Backfill a token for servers created before this feature existed.
-        if (!record.mcpToken) this.serverStore?.upsert(toRecord(entry));
+        if (!record.mcpToken) await this.serverStore?.upsert(toRecord(entry));
         restored++;
       } catch (err) {
         failed.push({ id: record.id, error: err instanceof Error ? err.message : String(err) });
@@ -170,6 +170,35 @@ export class ServerRegistry {
     return this.entries.get(id);
   }
 
+  /**
+   * Return a server entry, building it from the shared store on a cache miss.
+   * This is the read-through path that lets one replica serve a server another
+   * replica created: the record lives in Postgres even though this instance's
+   * in-memory cache is cold. Returns undefined if no such record exists.
+   */
+  async resolve(id: string): Promise<ServerEntry | undefined> {
+    const cached = this.entries.get(id);
+    if (cached) return cached;
+    if (!this.serverStore) return undefined;
+    const record = await this.serverStore.get(id);
+    if (!record) return undefined;
+    try {
+      const entry = await this.buildEntry({
+        spec: record.specSource,
+        name: record.name,
+        baseUrl: record.baseUrl,
+        slug: record.slug,
+        createdAt: record.createdAt,
+        mcpToken: record.mcpToken,
+      });
+      await this.restoreCredentials(entry);
+      this.entries.set(entry.slug, entry);
+      return entry;
+    } catch {
+      return undefined; // spec no longer ingestable — treat as unavailable
+    }
+  }
+
   tools(id: string): ToolDef[] | undefined {
     return this.entries.get(id)?.generated.tools;
   }
@@ -183,29 +212,30 @@ export class ServerRegistry {
     entry.generated = next;
     entry.baseUrl = next.baseUrl;
     entry.specHash = hashSpec(next);
-    this.serverStore?.upsert(toRecord(entry));
+    await this.serverStore?.upsert(toRecord(entry));
     return diff;
   }
 
   /** Set or replace a credential for a security scheme (takes effect live). */
-  setCredential(id: string, scheme: string, value: string): boolean {
+  async setCredential(id: string, scheme: string, value: string): Promise<boolean> {
     const entry = this.entries.get(id);
     if (!entry) return false;
     entry.creds[scheme] = value; // ctx.creds references this object by reference
-    this.persistCredential(id, scheme, value);
+    await this.persistCredential(id, scheme, value);
     return true;
   }
 
   /** Encrypt and persist a credential when a vault + store are configured. */
-  private persistCredential(serverId: string, scheme: string, value: string): void {
+  private async persistCredential(serverId: string, scheme: string, value: string): Promise<void> {
     if (!this.serverStore || !this.vault) return;
-    this.serverStore.setCredential(serverId, scheme, this.vault.encrypt(value));
+    await this.serverStore.setCredential(serverId, scheme, this.vault.encrypt(value));
   }
 
   /** Decrypt persisted credentials onto an entry's live credential store. */
-  private restoreCredentials(entry: ServerEntry): void {
+  private async restoreCredentials(entry: ServerEntry): Promise<void> {
     if (!this.serverStore || !this.vault) return;
-    for (const [scheme, enc] of Object.entries(this.serverStore.credentialsFor(entry.slug))) {
+    const creds = await this.serverStore.credentialsFor(entry.slug);
+    for (const [scheme, enc] of Object.entries(creds)) {
       try {
         entry.creds[scheme] = this.vault.decrypt(enc);
       } catch {
@@ -216,13 +246,13 @@ export class ServerRegistry {
     }
   }
 
-  remove(id: string): boolean {
+  async remove(id: string): Promise<boolean> {
     const existed = this.entries.delete(id);
-    if (existed) this.serverStore?.delete(id);
+    if (existed) await this.serverStore?.delete(id);
     return existed;
   }
 
-  logs(id: string, query: Omit<LogQuery, "server"> = {}): LogRow[] | undefined {
+  async logs(id: string, query: Omit<LogQuery, "server"> = {}): Promise<LogRow[] | undefined> {
     if (!this.entries.has(id) || !this.logStore) {
       return this.entries.has(id) ? [] : undefined;
     }
@@ -231,7 +261,8 @@ export class ServerRegistry {
 
   /** Sink the runtime should call to persist a tool-call log under a server. */
   recordLog(serverId: string, entry: Parameters<LogStore["record"]>[1]): void {
-    this.logStore?.record(serverId, entry);
+    // Fire-and-forget: never block or fail a tool call on logging.
+    this.logStore?.record(serverId, entry)?.catch(() => {});
   }
 
   private uniqueSlug(name: string): string {

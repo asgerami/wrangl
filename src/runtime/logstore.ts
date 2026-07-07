@@ -4,11 +4,29 @@ import { dirname } from "node:path";
 import type { RequestLog } from "./proxy.js";
 
 /**
- * Persistent usage-log store (the Usage Logs feature), backed by SQLite via
- * Node's built-in `node:sqlite` — no external dependency. Each generated server
- * records one row per tool call so calls can be tailed and queried later for
- * debugging agent workflows.
+ * Persistent usage-log store (the Usage Logs feature). Two interchangeable
+ * backends implement {@link LogStore}: SQLite (default) and Postgres (for
+ * multiple replicas sharing one database). Each generated server records one
+ * row per tool call so calls can be tailed and queried later.
  */
+
+export interface LogStore {
+  record(server: string, entry: RequestLog): Promise<void>;
+  query(q?: LogQuery): Promise<LogRow[]>;
+  close(): Promise<void>;
+}
+
+/**
+ * Open the configured log store. `location` is a SQLite file path, or a
+ * `postgres://` URL for the shared backend.
+ */
+export async function openLogStore(location: string): Promise<LogStore> {
+  if (/^postgres(ql)?:\/\//i.test(location)) {
+    const { PostgresLogStore } = await import("../controlplane/logstore-postgres.js");
+    return PostgresLogStore.connect(location);
+  }
+  return SqliteLogStore.open(location);
+}
 
 export interface LogRow {
   id: number;
@@ -55,7 +73,7 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_logs_tool   ON request_logs(tool);
 `;
 
-export class LogStore {
+export class SqliteLogStore implements LogStore {
   private db: DatabaseSync;
 
   private constructor(db: DatabaseSync) {
@@ -63,16 +81,16 @@ export class LogStore {
   }
 
   /** Open (creating parent dirs and schema as needed) a store at `path`. */
-  static open(path: string): LogStore {
+  static open(path: string): SqliteLogStore {
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
     const db = new DatabaseSync(path);
     db.exec("PRAGMA journal_mode = WAL;");
     db.exec(SCHEMA);
-    return new LogStore(db);
+    return new SqliteLogStore(db);
   }
 
   /** Persist one tool-call log entry under the given server name. */
-  record(server: string, entry: RequestLog): void {
+  async record(server: string, entry: RequestLog): Promise<void> {
     this.db
       .prepare(
         `INSERT INTO request_logs
@@ -95,7 +113,7 @@ export class LogStore {
   }
 
   /** Query logs newest-first, filtered by the given criteria. */
-  query(q: LogQuery = {}): LogRow[] {
+  async query(q: LogQuery = {}): Promise<LogRow[]> {
     const where: string[] = [];
     const params: Array<string | number> = [];
     if (q.server) (where.push("server = ?"), params.push(q.server));
@@ -113,7 +131,7 @@ export class LogStore {
       .all(...params, limit) as unknown as LogRow[];
   }
 
-  close(): void {
+  async close(): Promise<void> {
     this.db.close();
   }
 }

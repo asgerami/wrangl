@@ -38,6 +38,16 @@ export function buildControlPlane(
   // Per-server map of MCP session id → transport, for the hosted endpoint.
   const sessionsByServer = new Map<string, Map<string, StreamableHTTPServerTransport>>();
 
+  // Resolve a server by id, reading through the shared store on a cache miss so
+  // this replica can serve servers another replica created. OAuth tokens are
+  // (re)injected only when the entry is freshly built, not on every request.
+  const resolveServer = async (id: string) => {
+    if (registry.get(id)) return registry.get(id);
+    const entry = await registry.resolve(id);
+    if (entry && oauth) await oauth.restoreServer(id);
+    return entry;
+  };
+
   // Gate the management API behind the admin token. Public routes (the dashboard
   // shell, health, the OAuth callback, and the token-gated MCP endpoints) are
   // exempt — see isPublicRoute.
@@ -95,7 +105,7 @@ export function buildControlPlane(
   app.get("/servers", async () => registry.list());
 
   app.get("/servers/:id", async (request, reply) => {
-    const entry = registry.get(idParam(request));
+    const entry = await resolveServer(idParam(request));
     if (!entry) return notFound(reply);
     // Include the security schemes so the dashboard can render a credentials
     // form. Only names/types are exposed — never stored secret values.
@@ -118,6 +128,7 @@ export function buildControlPlane(
   });
 
   app.get("/servers/:id/tools", async (request, reply) => {
+    if (!(await resolveServer(idParam(request)))) return notFound(reply);
     const tools = registry.tools(idParam(request));
     if (!tools) return notFound(reply);
     return tools.map((t) => ({
@@ -132,8 +143,9 @@ export function buildControlPlane(
   });
 
   app.get("/servers/:id/logs", async (request, reply) => {
+    if (!(await resolveServer(idParam(request)))) return notFound(reply);
     const q = request.query as { tool?: string; status?: string; limit?: string };
-    const logs = registry.logs(idParam(request), {
+    const logs = await registry.logs(idParam(request), {
       tool: q.tool,
       status: q.status !== undefined ? Number(q.status) : undefined,
       limit: q.limit !== undefined ? Number(q.limit) : undefined,
@@ -144,6 +156,7 @@ export function buildControlPlane(
 
   app.post("/servers/:id/regenerate", async (request, reply) => {
     try {
+      if (!(await resolveServer(idParam(request)))) return notFound(reply);
       const diff = await registry.regenerate(idParam(request));
       if (!diff) return notFound(reply);
       return { diff, summary: formatDiff(diff) };
@@ -157,13 +170,14 @@ export function buildControlPlane(
     if (!body.scheme || body.value === undefined) {
       return reply.code(400).send({ error: "`scheme` and `value` are required." });
     }
-    const ok = registry.setCredential(idParam(request), body.scheme, body.value);
-    if (!ok) return notFound(reply);
+    if (!(await resolveServer(idParam(request)))) return notFound(reply);
+    await registry.setCredential(idParam(request), body.scheme, body.value);
     return reply.code(204).send();
   });
 
   app.delete("/servers/:id", async (request, reply) => {
-    const ok = registry.remove(idParam(request));
+    if (!(await resolveServer(idParam(request)))) return notFound(reply);
+    const ok = await registry.remove(idParam(request));
     if (!ok) return notFound(reply);
     sessionsByServer.delete(idParam(request));
     return reply.code(204).send();
@@ -174,19 +188,19 @@ export function buildControlPlane(
 
   app.get("/servers/:id/oauth", async (request, reply) => {
     const id = idParam(request);
-    if (!registry.get(id)) return notFound(reply);
+    if (!(await resolveServer(id))) return notFound(reply);
     if (!oauth) return reply.send([]);
-    return oauth.statuses(id);
+    return await oauth.statuses(id);
   });
 
   app.post("/servers/:id/oauth/:scheme/config", async (request, reply) => {
     if (!oauth) return oauthDisabled(reply);
     const id = idParam(request);
-    if (!registry.get(id)) return notFound(reply);
+    if (!(await resolveServer(id))) return notFound(reply);
     const body = (request.body ?? {}) as Partial<OAuthConfigInput>;
     if (!body.clientId) return reply.code(400).send({ error: "`clientId` is required." });
     try {
-      oauth.configure(id, schemeParam(request), body as OAuthConfigInput);
+      await oauth.configure(id, schemeParam(request), body as OAuthConfigInput);
       return reply.code(204).send();
     } catch (err) {
       return reply.code(400).send({ error: errMessage(err) });
@@ -199,9 +213,9 @@ export function buildControlPlane(
   app.get("/servers/:id/oauth/:scheme/authorize", async (request, reply) => {
     if (!oauth) return oauthDisabled(reply);
     const id = idParam(request);
-    if (!registry.get(id)) return notFound(reply);
+    if (!(await resolveServer(id))) return notFound(reply);
     try {
-      return { url: oauth.startAuthorization(id, schemeParam(request)) };
+      return { url: await oauth.startAuthorization(id, schemeParam(request)) };
     } catch (err) {
       return reply.code(400).send({ error: errMessage(err) });
     }
@@ -228,7 +242,7 @@ export function buildControlPlane(
   app.post("/servers/:id/oauth/:scheme/refresh", async (request, reply) => {
     if (!oauth) return oauthDisabled(reply);
     const id = idParam(request);
-    if (!registry.get(id)) return notFound(reply);
+    if (!(await resolveServer(id))) return notFound(reply);
     try {
       const ok = await oauth.refresh(id, schemeParam(request));
       return ok ? reply.code(204).send() : reply.code(400).send({ error: "No refresh token." });
@@ -241,7 +255,7 @@ export function buildControlPlane(
   // from the server's current tools — so a regenerate reaches new sessions.
   app.all("/servers/:id/mcp", async (request, reply) => {
     const id = idParam(request);
-    const entry = registry.get(id);
+    const entry = await resolveServer(id);
     if (!entry) return notFound(reply);
 
     // Per-server Bearer token: this endpoint proxies calls using stored

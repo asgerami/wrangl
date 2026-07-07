@@ -81,9 +81,9 @@ export class OAuthManager {
   }
 
   /** Set/merge client config for a scheme, defaulting URLs/scopes from the spec. */
-  configure(serverId: string, scheme: string, input: OAuthConfigInput): void {
+  async configure(serverId: string, scheme: string, input: OAuthConfigInput): Promise<void> {
     const specScheme = this.specScheme(serverId, scheme);
-    const existing = this.loadState(serverId, scheme);
+    const existing = await this.loadState(serverId, scheme);
     const config: StoredConfig = {
       clientId: input.clientId,
       clientSecret: input.clientSecret ?? existing?.config.clientSecret,
@@ -99,12 +99,12 @@ export class OAuthManager {
           "provide them — pass authorizationUrl/tokenUrl in the config).",
       );
     }
-    this.saveState(serverId, scheme, { config, tokens: existing?.tokens });
+    await this.saveState(serverId, scheme, { config, tokens: existing?.tokens });
   }
 
   /** Begin authorization: returns the URL the user must visit to grant access. */
-  startAuthorization(serverId: string, scheme: string): string {
-    const state = this.loadState(serverId, scheme);
+  async startAuthorization(serverId: string, scheme: string): Promise<string> {
+    const state = await this.loadState(serverId, scheme);
     if (!state?.config.clientId) {
       throw new Error(`OAuth for "${scheme}" is not configured yet.`);
     }
@@ -127,7 +127,7 @@ export class OAuthManager {
     }
     this.pending.delete(csrf);
 
-    const state = this.loadState(pending.serverId, pending.scheme);
+    const state = await this.loadState(pending.serverId, pending.scheme);
     if (!state) throw new Error("OAuth configuration disappeared mid-flow.");
 
     const tokens = await exchangeCode(toConfig(state.config), {
@@ -135,24 +135,24 @@ export class OAuthManager {
       codeVerifier: pending.codeVerifier,
     });
     state.tokens = tokens;
-    this.saveState(pending.serverId, pending.scheme, state);
+    await this.saveState(pending.serverId, pending.scheme, state);
     this.applyToken(pending.serverId, pending.scheme, tokens.accessToken);
     return { serverId: pending.serverId, scheme: pending.scheme };
   }
 
   /** Refresh the access token; returns false if no refresh token is available. */
   async refresh(serverId: string, scheme: string): Promise<boolean> {
-    const state = this.loadState(serverId, scheme);
+    const state = await this.loadState(serverId, scheme);
     if (!state?.tokens?.refreshToken) return false;
     const tokens = await refreshTokens(toConfig(state.config), state.tokens.refreshToken);
     state.tokens = tokens;
-    this.saveState(serverId, scheme, state);
+    await this.saveState(serverId, scheme, state);
     this.applyToken(serverId, scheme, tokens.accessToken);
     return true;
   }
 
-  status(serverId: string, scheme: string): OAuthStatus {
-    const state = this.loadState(serverId, scheme);
+  async status(serverId: string, scheme: string): Promise<OAuthStatus> {
+    const state = await this.loadState(serverId, scheme);
     return {
       scheme,
       configured: !!state?.config.clientId,
@@ -162,12 +162,13 @@ export class OAuthManager {
   }
 
   /** Statuses for every oauth2 scheme on a server. */
-  statuses(serverId: string): OAuthStatus[] {
+  async statuses(serverId: string): Promise<OAuthStatus[]> {
     const entry = this.registry.get(serverId);
     if (!entry) return [];
-    return Object.values(entry.generated.securitySchemes)
-      .filter((s) => s.type === "oauth2")
-      .map((s) => this.status(serverId, s.name));
+    const oauthSchemes = Object.values(entry.generated.securitySchemes).filter(
+      (s) => s.type === "oauth2",
+    );
+    return Promise.all(oauthSchemes.map((s) => this.status(serverId, s.name)));
   }
 
   /**
@@ -176,19 +177,28 @@ export class OAuthManager {
    */
   async restoreAll(): Promise<void> {
     for (const summary of this.registry.list()) {
-      for (const scheme of Object.keys(this.store.oauthFor(summary.id))) {
-        const state = this.loadState(summary.id, scheme);
-        if (!state?.tokens?.accessToken) continue;
-        if (isExpired(state.tokens) && state.tokens.refreshToken) {
-          try {
-            await this.refresh(summary.id, scheme);
-            continue;
-          } catch {
-            // fall through to using the (possibly expired) token
-          }
+      await this.restoreServer(summary.id);
+    }
+  }
+
+  /**
+   * Inject stored access tokens for one server (refreshing expired ones) — used
+   * both on boot and when a replica read-through-resolves a server another
+   * replica created.
+   */
+  async restoreServer(serverId: string): Promise<void> {
+    for (const scheme of Object.keys(await this.store.oauthFor(serverId))) {
+      const state = await this.loadState(serverId, scheme);
+      if (!state?.tokens?.accessToken) continue;
+      if (isExpired(state.tokens) && state.tokens.refreshToken) {
+        try {
+          await this.refresh(serverId, scheme);
+          continue;
+        } catch {
+          // fall through to using the (possibly expired) token
         }
-        this.applyToken(summary.id, scheme, state.tokens.accessToken);
       }
+      this.applyToken(serverId, scheme, state.tokens.accessToken);
     }
   }
 
@@ -206,8 +216,8 @@ export class OAuthManager {
     return s?.type === "oauth2" ? s : undefined;
   }
 
-  private loadState(serverId: string, scheme: string): OAuthState | undefined {
-    const enc = this.store.oauthFor(serverId)[scheme];
+  private async loadState(serverId: string, scheme: string): Promise<OAuthState | undefined> {
+    const enc = (await this.store.oauthFor(serverId))[scheme];
     if (!enc) return undefined;
     try {
       return JSON.parse(this.vault.decrypt(enc)) as OAuthState;
@@ -216,8 +226,8 @@ export class OAuthManager {
     }
   }
 
-  private saveState(serverId: string, scheme: string, state: OAuthState): void {
-    this.store.setOAuth(serverId, scheme, this.vault.encrypt(JSON.stringify(state)));
+  private async saveState(serverId: string, scheme: string, state: OAuthState): Promise<void> {
+    await this.store.setOAuth(serverId, scheme, this.vault.encrypt(JSON.stringify(state)));
   }
 
   private sweepPending(): void {

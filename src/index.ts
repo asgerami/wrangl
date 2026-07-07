@@ -43,7 +43,13 @@ export {
   type CreateServerInput,
   type RegistryOptions,
 } from "./controlplane/registry.js";
-export { ServerStore, type ServerRecord } from "./controlplane/store.js";
+export {
+  openServerStore,
+  SqliteServerStore,
+  isPostgresUrl,
+  type ServerStore,
+  type ServerRecord,
+} from "./controlplane/store.js";
 export { Vault } from "./controlplane/vault.js";
 export { buildControlPlane, type ControlPlaneOptions } from "./controlplane/api.js";
 export {
@@ -76,7 +82,9 @@ export {
 } from "./runtime/auth.js";
 export { serveStdio, serveHttp } from "./runtime/transport.js";
 export {
-  LogStore,
+  openLogStore,
+  SqliteLogStore,
+  type LogStore,
   type LogRow,
   type LogQuery,
 } from "./runtime/logstore.js";

@@ -8,9 +8,9 @@ import { createMcpServer, createReloadableServer } from "./runtime/server.js";
 import { serveStdio, serveHttp } from "./runtime/transport.js";
 import { watchSpec } from "./runtime/watch.js";
 import { diffTools, formatDiff, hasChanges } from "./generator/diff.js";
-import { LogStore, type LogRow } from "./runtime/logstore.js";
+import { openLogStore, type LogStore, type LogRow } from "./runtime/logstore.js";
 import { ServerRegistry } from "./controlplane/registry.js";
-import { ServerStore } from "./controlplane/store.js";
+import { openServerStore } from "./controlplane/store.js";
 import { Vault } from "./controlplane/vault.js";
 import { OAuthManager } from "./controlplane/oauth-manager.js";
 import { seedRegistry, defaultManifestPath } from "./controlplane/seed.js";
@@ -86,7 +86,7 @@ program
       const creds = resolveCredentials(active, options.auth);
       warnMissingCreds(active, creds);
 
-      const store = openLogStore(options.logDb);
+      const store = await maybeOpenLogStore(options.logDb);
       if (store) console.error(`→ logging tool calls to ${logDbPath(options.logDb)}`);
 
       const onLog = (e: RequestLog) => {
@@ -94,7 +94,7 @@ program
           `[${e.statusCode ?? "ERR"}] ${e.method} ${e.tool} ${e.latencyMs}ms` +
             (e.error ? ` — ${e.error}` : ""),
         );
-        store?.record(active.name, e);
+        store?.record(active.name, e)?.catch(() => {});
       };
 
       const startWatch = (onChange: (next: typeof active) => void) => {
@@ -194,7 +194,7 @@ program
   .option("--json", "Output rows as JSON")
   .action(async (options) => {
     try {
-      const store = LogStore.open(logDbPath(options.db));
+      const store = await openLogStore(logDbPath(options.db));
       const filter = {
         server: options.server,
         tool: options.tool,
@@ -208,10 +208,10 @@ program
       }
 
       // Newest-first from the store; print oldest-first so the latest is last.
-      const rows = store.query(filter).reverse();
+      const rows = (await store.query(filter)).reverse();
       if (options.json) console.log(JSON.stringify(rows, null, 2));
       else for (const row of rows) console.log(formatLogRow(row));
-      store.close();
+      await store.close();
     } catch (err) {
       fail(err);
     }
@@ -246,11 +246,15 @@ program
   )
   .action(async (options) => {
     try {
-      const dbPath = logDbPath(options.logDb);
+      // DB location: --log-db (path or postgres URL) > DATABASE_URL > default file.
+      const dbLocation =
+        (typeof options.logDb === "string" ? options.logDb : undefined) ??
+        process.env.DATABASE_URL ??
+        DEFAULT_LOG_DB;
       const vault = Vault.fromEnv();
-      const serverStore = ServerStore.open(dbPath);
+      const serverStore = await openServerStore(dbLocation);
       const registry = new ServerRegistry({
-        logStore: LogStore.open(dbPath),
+        logStore: await openLogStore(dbLocation),
         serverStore,
         vault,
       });
@@ -263,7 +267,7 @@ program
 
       // Rehydrate previously-created servers by re-ingesting their specs.
       const { restored, failed } = await registry.load();
-      if (restored) console.error(`→ restored ${restored} server(s) from ${dbPath}`);
+      if (restored) console.error(`→ restored ${restored} server(s) from ${dbLocation}`);
       for (const f of failed) {
         console.error(`⚠ could not restore "${f.id}": ${f.error}`);
       }
@@ -332,7 +336,7 @@ program
         `\nMCPify control plane on http://${options.host}:${port}` +
           (publicBase !== `http://${options.host}:${port}` ? ` (public: ${publicBase})` : "") +
           `\n  dashboard at /   ·   hosted MCP at /servers/<id>/mcp (Bearer token)\n` +
-          `Persisting servers + logs to ${dbPath}. Press Ctrl+C to stop.`,
+          `Persisting servers + logs to ${dbLocation}. Press Ctrl+C to stop.`,
       );
     } catch (err) {
       fail(err);
@@ -374,8 +378,8 @@ function logDbPath(flag: unknown): string {
 }
 
 /** Open a log store when --log-db was passed; otherwise return undefined. */
-function openLogStore(flag: unknown): LogStore | undefined {
-  return flag ? LogStore.open(logDbPath(flag)) : undefined;
+async function maybeOpenLogStore(flag: unknown): Promise<LogStore | undefined> {
+  return flag ? openLogStore(logDbPath(flag)) : undefined;
 }
 
 function formatLogRow(row: LogRow): string {
@@ -392,12 +396,12 @@ async function tailLogs(
   asJson?: boolean,
 ): Promise<void> {
   // Seed from the most recent existing id so we only show new calls.
-  const seed = store.query({ ...filter, limit: 1 });
+  const seed = await store.query({ ...filter, limit: 1 });
   let lastId = seed[0]?.id ?? 0;
   console.error("Tailing usage logs — press Ctrl+C to stop.");
 
   for (;;) {
-    const rows = store.query({ ...filter, afterId: lastId, limit: 500 });
+    const rows = await store.query({ ...filter, afterId: lastId, limit: 500 });
     for (const row of rows) {
       console.log(asJson ? JSON.stringify(row) : formatLogRow(row));
       lastId = row.id;
