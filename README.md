@@ -19,6 +19,10 @@ never exposed to the agent.
 
 No OpenAPI knowledge, no config files, no boilerplate.
 
+<p align="center">
+  <img src="docs/dashboard.png" alt="MCPify dashboard running a generated tool against a live API and showing the JSON response" width="900" />
+</p>
+
 ## Quick start
 
 Requires **Node 22+**.
