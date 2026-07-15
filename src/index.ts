@@ -69,10 +69,22 @@ export {
 export {
   seedRegistry,
   loadManifest,
+  loadCatalog,
+  findCatalogEntry,
   defaultManifestPath,
   type SeedEntry,
   type SeedResult,
 } from "./controlplane/seed.js";
+export {
+  installServer,
+  buildServerEntry,
+  clientConfigPath,
+  clientLabel,
+  selfCommand,
+  type ClientName,
+  type McpServerEntry,
+  type InstallResult,
+} from "./clients.js";
 export { executeTool, type ProxyContext, type RequestLog } from "./runtime/proxy.js";
 export {
   loadCredentialsFromEnv,
