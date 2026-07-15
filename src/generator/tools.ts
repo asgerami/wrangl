@@ -127,11 +127,58 @@ function toToolParam(p: RawParameter): ToolParam {
     location,
     required: p.required ?? location === "path", // path params are always required
     description: p.description,
-    schema: p.schema ?? { type: "string" },
+    schema: pruneCycles(p.schema) ?? { type: "string" },
     style,
     // OpenAPI default: explode is true for `form`, false for every other style.
     explode: p.explode ?? style === "form",
   };
+}
+
+/**
+ * Dereferenced OpenAPI documents inline recursive `$ref`s as genuine circular
+ * JavaScript references (common in large specs like Stripe). Those objects
+ * cannot be JSON-serialized for storage or the MCP wire format, and would send
+ * the schema-to-zod conversion into infinite recursion. Return a structural
+ * copy in which every object node is expanded at most once: the first time a
+ * node is reached it is copied in full; any later reference to the same node —
+ * whether a recursive back-edge or a subschema shared across many fields —
+ * collapses to a permissive `{}` (JSON Schema for "any").
+ *
+ * Expanding each node once is what keeps this bounded. Cutting only true cycles
+ * would leave the object graph acyclic but still let a heavily shared subschema
+ * (Stripe's giant `anyOf` unions reuse the same objects hundreds of times)
+ * serialize to gigabytes of duplicated text. Emit-once bounds the output to the
+ * size of the reachable graph at the cost of showing repeated schemas in full
+ * only on their first occurrence within a tool, which is an acceptable trade for
+ * a self-contained tool schema.
+ *
+ * A depth cap on top of that keeps individual tool schemas lean enough to be
+ * useful to an agent: some specs nest distinct objects dozens of levels deep,
+ * and a multi-hundred-KB `inputSchema` is noise no model will read. Beyond the
+ * cap we substitute `{}`; the useful top-level shape survives.
+ */
+const MAX_SCHEMA_DEPTH = 12;
+
+function pruneCycles(schema: JsonSchema | undefined): JsonSchema | undefined {
+  if (schema === undefined) return undefined;
+  return prune(schema, new Set(), 0) as JsonSchema;
+}
+
+function prune(node: unknown, seen: Set<object>, depth: number): unknown {
+  if (node === null || typeof node !== "object") return node;
+  const obj = node as object;
+  if (depth > MAX_SCHEMA_DEPTH || seen.has(obj)) {
+    return Array.isArray(node) ? [] : {};
+  }
+  seen.add(obj);
+  if (Array.isArray(node)) {
+    return node.map((v) => prune(v, seen, depth + 1));
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+    out[k] = prune(v, seen, depth + 1);
+  }
+  return out;
 }
 
 /** Resolve the serialization style, applying OpenAPI's per-location defaults. */
@@ -174,7 +221,7 @@ function extractOutputSchema(op: Operation): JsonSchema | undefined {
 
   const type = Array.isArray(schema.type) ? schema.type[0] : schema.type;
   const isObject = type === "object" || (!type && !!schema.properties);
-  return isObject ? schema : undefined;
+  return isObject ? pruneCycles(schema) : undefined;
 }
 
 /** Pick a JSON request body, preferring application/json. */
@@ -192,7 +239,7 @@ function extractBody(op: Operation): ToolDef["body"] {
     required: op.requestBody?.required ?? false,
     description: op.requestBody?.description,
     contentType,
-    schema: schema ?? { type: "object" },
+    schema: pruneCycles(schema) ?? { type: "object" },
   };
 }
 

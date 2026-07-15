@@ -14,16 +14,33 @@ import { toolInputShape, toolOutputShape } from "../src/generator/schema.js";
  * deterministically rather than the network. Skipped under MCPIFY_SKIP_NETWORK.
  */
 
-const SPECS: Array<{ name: string; url: string; ext: string; minTools: number }> = [
+const SPECS: Array<{
+  name: string;
+  url: string;
+  ext: string;
+  minTools: number;
+  // Needed when the spec's own `servers` URL is relative: a downloaded copy has
+  // lost the original URL to resolve it against.
+  baseUrl?: string;
+}> = [
   {
     name: "Petstore (OpenAPI example)",
     url: "https://petstore3.swagger.io/api/v3/openapi.json",
     ext: "json",
     minTools: 10,
+    baseUrl: "https://petstore3.swagger.io/api/v3",
   },
   {
     name: "GitHub API (large, complex)",
     url: "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
+    ext: "json",
+    minTools: 500,
+  },
+  {
+    // Heavily recursive schemas: dereferencing inlines circular `$ref`s, which
+    // must not leak into the generated tools as circular objects.
+    name: "Stripe API (recursive schemas)",
+    url: "https://raw.githubusercontent.com/stripe/openapi/master/openapi/spec3.json",
     ext: "json",
     minTools: 500,
   },
@@ -53,11 +70,16 @@ for (const spec of SPECS) {
       return;
     }
 
-    const gen = await ingest(file);
+    const gen = await ingest(file, spec.baseUrl ? { baseUrl: spec.baseUrl } : {});
     assert.ok(
       gen.tools.length >= spec.minTools,
       `expected ≥ ${spec.minTools} tools, got ${gen.tools.length}`,
     );
+
+    // Generated tools must be plain, finite, JSON-serializable trees: they are
+    // persisted to the store and sent over the MCP wire. Recursive specs used
+    // to produce circular objects that threw here.
+    assert.doesNotThrow(() => JSON.stringify(gen.tools));
 
     // Tool names must be unique and MCP-safe (letters/digits/underscores).
     const names = new Set<string>();
