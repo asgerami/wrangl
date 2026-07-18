@@ -135,7 +135,7 @@ Or add it by hand to your client's config (`claude_desktop_config.json`):
   "mcpServers": {
     "petstore": {
       "command": "npx",
-      "args": ["wrangl", "generate", "--spec", "https://petstore3.swagger.io/api/v3/openapi.json"]
+      "args": ["@asgerami/wrangl", "generate", "--spec", "https://petstore3.swagger.io/api/v3/openapi.json"]
     }
   }
 }
@@ -415,7 +415,7 @@ entry.
 ## Library usage
 
 ```ts
-import { ingest, createMcpServer, serveStdio } from "wrangl";
+import { ingest, createMcpServer, serveStdio } from "@asgerami/wrangl";
 
 const generated = await ingest("https://api.example.com/openapi.json", {
   baseUrl: "https://api.example.com",

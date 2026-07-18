@@ -30,15 +30,15 @@ Requires **Node 22+**.
 ```bash
 # Point at an API. Wrangl finds the spec, generates the tools, and wires it
 # into Claude Desktop. Restart Claude and it can use the API.
-npx wrangl install https://petstore3.swagger.io
+npx @asgerami/wrangl install https://petstore3.swagger.io
 
 # No spec handy? Pick a ready-made one from the catalog.
-npx wrangl add github --include "repos*"   # filter a huge API
-npx wrangl add stripe                      # 587 tools
-npx wrangl catalog                         # see them all
+npx @asgerami/wrangl add github --include "repos*"   # filter a huge API
+npx @asgerami/wrangl add stripe                      # 587 tools
+npx @asgerami/wrangl catalog                         # see them all
 
 # Prefer a UI? A dashboard to create, test, and monitor servers.
-npx wrangl serve             # http://localhost:4000
+npx @asgerami/wrangl serve             # http://localhost:4000
 ```
 
 Target Cursor instead with `--client cursor`.
@@ -53,8 +53,9 @@ node dist/cli.js install https://petstore3.swagger.io
 
 ## Why Wrangl
 
-- **One command to a working tool.** `wrangl install <api>` discovers the spec,
-  generates the tools, and writes the server into your agent client. Done.
+- **One command to a working tool.** `npx @asgerami/wrangl install <api>`
+  discovers the spec, generates the tools, and writes the server into your agent
+  client. Done.
 - **A catalog of ready-made servers.** `wrangl add github|stripe|openai|twilio`
   so you don't need a spec at all.
 - **Auto-discovery.** Point at a bare base URL and Wrangl probes well-known paths

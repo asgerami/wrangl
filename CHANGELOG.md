@@ -11,6 +11,12 @@ While the project is pre-1.0, minor versions may include breaking changes.
 
 ## [0.2.0] - 2026-07-18
 
+### Changed
+
+- **Package name.** Published as `@asgerami/wrangl` — npm rejected the unscoped
+  name `wrangl` as too similar to Cloudflare's `wrangler`. The CLI binary is
+  still `wrangl`; install with `npx @asgerami/wrangl …`.
+
 ### Added
 
 - **Tool filters.** `--include` / `--exclude` (glob) on `generate`, `inspect`,
