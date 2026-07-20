@@ -61,7 +61,7 @@ npm run start -- install https://petstore3.swagger.io
 - **One command to a working tool.** `npx @asgerami/wrangl install <api>`
   discovers the spec, generates the tools, and writes the server into your agent
   client. Done.
-- **A catalog of ready-made servers.** `wrangl add github|stripe|openai|twilio`
+- **A catalog of ready-made servers.** `wrangl add github|stripe|openai|twilio|discord|slack|sendgrid|pagerduty`
   so you don't need a spec at all.
 - **Auto-discovery.** Point at a bare base URL and Wrangl probes well-known paths
   and even reads the docs page to find the OpenAPI spec.

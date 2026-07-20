@@ -44,6 +44,32 @@ const SPECS: Array<{
     ext: "json",
     minTools: 500,
   },
+  {
+    name: "Discord API (catalog entry)",
+    url: "https://raw.githubusercontent.com/discord/discord-api-spec/main/specs/openapi.json",
+    ext: "json",
+    minTools: 200,
+  },
+  {
+    // Official spec is Swagger 2.0 (unsupported); the catalog points at
+    // APIs.guru's OpenAPI 3.0 conversion instead.
+    name: "Slack Web API (catalog entry, converted spec)",
+    url: "https://api.apis.guru/v2/specs/slack.com/1.7.0/openapi.json",
+    ext: "json",
+    minTools: 150,
+  },
+  {
+    name: "SendGrid Mail API (catalog entry)",
+    url: "https://raw.githubusercontent.com/twilio/sendgrid-oai/main/spec/json/tsg_mail_v3.json",
+    ext: "json",
+    minTools: 3,
+  },
+  {
+    name: "PagerDuty API (catalog entry)",
+    url: "https://raw.githubusercontent.com/PagerDuty/api-schema/main/reference/REST/openapiv3.json",
+    ext: "json",
+    minTools: 400,
+  },
 ];
 
 const skip = process.env.WRANGL_SKIP_NETWORK === "1";

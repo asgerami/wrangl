@@ -22,7 +22,7 @@
       "name": "GitHub",
       "spec": "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
       "auth": "bearer",
-      "tools": 1204,
+      "tools": 1206,
       "note": "Full GitHub REST API. Needs a personal access token."
     },
     {
@@ -48,6 +48,38 @@
       "auth": "basic",
       "tools": 197,
       "note": "SMS/voice. Basic auth: accountSid:authToken."
+    },
+    {
+      "id": "discord",
+      "name": "Discord",
+      "spec": "https://raw.githubusercontent.com/discord/discord-api-spec/main/specs/openapi.json",
+      "auth": "apikey",
+      "tools": 242,
+      "note": "Bot API. Needs the full header value incl. prefix: WRANGL_API_KEY=\"Bot <token>\"."
+    },
+    {
+      "id": "slack",
+      "name": "Slack",
+      "spec": "https://api.apis.guru/v2/specs/slack.com/1.7.0/openapi.json",
+      "auth": "bearer",
+      "tools": 174,
+      "note": "Web API. Use a Bot/User OAuth token (xoxb-.../xoxp-...) as the bearer token."
+    },
+    {
+      "id": "sendgrid",
+      "name": "SendGrid",
+      "spec": "https://raw.githubusercontent.com/twilio/sendgrid-oai/main/spec/json/tsg_mail_v3.json",
+      "auth": "bearer",
+      "tools": 3,
+      "note": "Mail-sending API only (send, batch). Use an API key as the bearer token."
+    },
+    {
+      "id": "pagerduty",
+      "name": "PagerDuty",
+      "spec": "https://raw.githubusercontent.com/PagerDuty/api-schema/main/reference/REST/openapiv3.json",
+      "auth": "apikey",
+      "tools": 465,
+      "note": "Needs the full header value incl. prefix: WRANGL_API_KEY=\"Token token=<key>\"."
     }
   ]
 }

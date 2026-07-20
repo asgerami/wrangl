@@ -15,6 +15,11 @@ While the project is pre-1.0, minor versions may include breaking changes.
   `cline`, `zed`, and `vscode`, alongside `claude` and `cursor`. Zed and VS
   Code use their own config shape (`context_servers`/`source: "custom"` and
   `servers`/`type: "stdio"` respectively) — handled automatically per client.
+- **Grew the catalog.** `wrangl add` now also has `discord` (242 tools),
+  `slack` (174 tools, via APIs.guru's OpenAPI 3.0 conversion — Slack's own
+  spec is still Swagger 2.0), `sendgrid` (3 tools; mail-sending API only —
+  SendGrid's spec is split into 46 per-resource files with no combined doc),
+  and `pagerduty` (465 tools).
 
 ## [0.2.0] - 2026-07-18
 
