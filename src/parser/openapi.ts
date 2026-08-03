@@ -11,6 +11,8 @@ import { isPostmanCollection, postmanToOpenAPI } from "./postman.js";
 export interface ParseOptions {
   /** Override the upstream base URL (e.g. when the spec omits `servers`). */
   baseUrl?: string;
+  /** HTTP methods (lowercase) to mark `destructiveHint: true`. Default: delete, put, patch. */
+  destructiveMethods?: Set<string>;
 }
 
 /**
@@ -33,7 +35,9 @@ export async function ingest(
 
   const baseUrl = resolveBaseUrl(api, specSource, opts.baseUrl);
   const securitySchemes = mapSecuritySchemes(api);
-  const tools = buildTools(api, securitySchemes);
+  const tools = buildTools(api, securitySchemes, {
+    destructiveMethods: opts.destructiveMethods,
+  });
 
   return {
     name: api.info?.title ?? "mcp-server",

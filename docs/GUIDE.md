@@ -6,10 +6,12 @@ The complete reference. For the elevator pitch and quick start, see the
 ## Contents
 
 - [How it works](#how-it-works)
+- [Protocol support](#protocol-support)
 - [CLI reference](#cli-reference)
 - [Connecting to your agent](#connecting-to-your-agent)
 - [Authentication](#authentication)
 - [Reliability](#reliability)
+- [Destructive-action confirmation](#destructive-action-confirmation)
 - [Semantic enrichment (LLM pass)](#semantic-enrichment-llm-pass)
 - [Spec auto-discovery](#spec-auto-discovery)
 - [Usage logs](#usage-logs)
@@ -43,6 +45,34 @@ Wrangl has three stages: ingest, generate, run.
 
 Tested against large real-world specs (the full GitHub REST API, Stripe,
 Petstore) to keep ingestion and schema generation robust.
+
+## Protocol support
+
+Wrangl targets MCP protocol revision **`2026-07-28`** — the stateless,
+per-request revision (every request carries its own `_meta` protocol
+version and capabilities; there's no `initialize` handshake or session to
+hold open). It also serves every earlier revision (`2025-11-25` and back)
+from the exact same tool definitions: a client's own opening exchange
+decides which era it gets, so nothing needs to be configured.
+
+What that means in practice:
+
+- **A `2026-07-28` client** gets `resultType`-tagged results, `ttlMs` /
+  `cacheScope` cache hints on `tools/list`, and the
+  [MRTR-based confirmation flow](#destructive-action-confirmation) for
+  destructive tools.
+- **An older client** (anything speaking `2025-11-25` or earlier) gets the
+  familiar session-based `initialize` handshake. Destructive-tool
+  confirmation still works — the SDK's legacy shim translates it into a
+  real server-initiated elicitation request under the hood — but cache
+  hints and the stateless request model don't apply, since those didn't
+  exist yet in that era.
+- **Tool annotations.** Every generated tool carries `readOnlyHint` /
+  `destructiveHint` / `idempotentHint` / `openWorldHint`, derived from the
+  HTTP verb: `GET`/`HEAD` → read-only; `DELETE`/`PUT`/`PATCH` → destructive
+  by default (override via `destructiveMethods` in `ParseOptions`); `POST` →
+  neither. These are hints for the agent, not a security boundary — the
+  actual gate is the confirmation flow below.
 
 ## CLI reference
 
@@ -185,6 +215,35 @@ actually landed: `GET`, `HEAD`, `OPTIONS`, `PUT`, `DELETE`. `POST`/`PATCH`
 responses are returned as-is, so a flaky network never risks silently running
 a write (an order, a charge, an email) twice. Library callers can tune this
 via `ProxyContext.maxRetries` (`0` disables it).
+
+## Destructive-action confirmation
+
+Any tool whose annotations carry `destructiveHint: true` (`DELETE` by
+default, plus `PUT`/`PATCH` unless overridden — see
+[Protocol support](#protocol-support)) is gated behind a confirmation
+prompt before it runs. The agent's first call comes back as an
+`input_required` result asking the user to confirm; only a retry that
+echoes back an accepted confirmation actually reaches the upstream API.
+
+This uses MCP's multi-round-trip request (MRTR) pattern under the hood, via
+the SDK's `inputRequired()` builder — no custom protocol fields, matching
+what a `2026-07-28` client (or, via the legacy shim, an older one) already
+expects.
+
+**Integrity.** The `requestState` that ties a confirmation to the exact call
+it was issued for is HMAC-SHA256 signed (via the SDK's
+`createRequestStateCodec`) and bound to a digest of that call's arguments —
+so a confirmation minted for "delete item 5" can't be replayed onto "delete
+item 999", and a tampered or expired token is rejected outright rather than
+silently honored. Set `WRANGL_SECRET_KEY` (the same secret the credential
+vault uses) so confirmations survive a process restart and work across
+control-plane replicas; without it, wrangl falls back to a random
+per-process key that only works within a single running process (fine for a
+local `wrangl generate`, not for the hosted control plane).
+
+**Turning it off.** Pass `confirmDestructive: false` in `RuntimeOptions` to
+disable confirmation entirely, or a predicate `(tool) => boolean` to gate
+only specific tools.
 
 ## Semantic enrichment (LLM pass)
 

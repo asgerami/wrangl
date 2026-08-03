@@ -45,6 +45,23 @@ export interface ToolBody {
   schema: JsonSchema;
 }
 
+/**
+ * MCP tool behavior hints (spec `ToolAnnotations`), derived from the HTTP verb.
+ * Mirrors the wire field names exactly; kept as our own type (rather than an
+ * SDK import) so the generator has no runtime/SDK dependency. All four are
+ * hints, never a security boundary — clients MUST treat them as untrusted.
+ */
+export interface ToolAnnotationHints {
+  /** No side effects. Spec default when omitted: false. */
+  readOnlyHint?: boolean;
+  /** May perform destructive updates. Spec default when omitted: TRUE. */
+  destructiveHint?: boolean;
+  /** Repeat calls with the same arguments have no additional effect. Spec default: false. */
+  idempotentHint?: boolean;
+  /** Interacts with an open world of external entities. Spec default: true. */
+  openWorldHint?: boolean;
+}
+
 /** A fully-described MCP tool, ready to be registered and proxied. */
 export interface ToolDef {
   /** MCP tool name, unique within a server. */
@@ -67,6 +84,8 @@ export interface ToolDef {
    * responses (MCP output schemas must be objects).
    */
   outputSchema?: JsonSchema;
+  /** Behavior hints derived from the HTTP verb (see {@link ToolAnnotationHints}). */
+  annotations?: ToolAnnotationHints;
 }
 
 /** The product of ingestion + generation: everything the runtime needs. */

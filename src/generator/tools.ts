@@ -3,6 +3,7 @@ import type {
   ParamLocation,
   ParamStyle,
   SecurityScheme,
+  ToolAnnotationHints,
   ToolDef,
   ToolParam,
 } from "../types.js";
@@ -14,6 +15,36 @@ import {
 } from "../parser/openapi.js";
 
 /**
+ * HTTP methods that default to `destructiveHint: true` — replace-in-place
+ * (PUT) and partial-update (PATCH) semantics, alongside DELETE. Operators who
+ * know their API's PUT/PATCH are safe (e.g. idempotent upserts) can override
+ * via {@link BuildToolsOptions.destructiveMethods}.
+ */
+const DEFAULT_DESTRUCTIVE_METHODS = new Set(["delete", "put", "patch"]);
+
+export interface BuildToolsOptions {
+  /** HTTP methods (lowercase) to mark `destructiveHint: true`. Default: delete, put, patch. */
+  destructiveMethods?: Set<string>;
+}
+
+/** Derive MCP tool annotations from the HTTP verb (spec `ToolAnnotations`). */
+function deriveAnnotations(method: string, destructiveMethods: Set<string>): ToolAnnotationHints {
+  const m = method.toLowerCase();
+  if (m === "get" || m === "head") {
+    return { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
+  }
+  const destructive = destructiveMethods.has(m);
+  return {
+    readOnlyHint: false,
+    destructiveHint: destructive,
+    // DELETE and PUT are idempotent by convention (repeat calls converge on the
+    // same end state); POST/PATCH are not assumed to be.
+    idempotentHint: m === "delete" || m === "put",
+    openWorldHint: true,
+  };
+}
+
+/**
  * Structural generation pass: deterministically map every (path, method)
  * operation to an MCP tool definition. No LLM involved — that is the future
  * semantic-enrichment pass, which would refine `name`/`description` here.
@@ -21,7 +52,9 @@ import {
 export function buildTools(
   api: OpenAPIDoc,
   securitySchemes: Record<string, SecurityScheme>,
+  options: BuildToolsOptions = {},
 ): ToolDef[] {
+  const destructiveMethods = options.destructiveMethods ?? DEFAULT_DESTRUCTIVE_METHODS;
   const tools: ToolDef[] = [];
   const usedNames = new Set<string>();
   const paths = api.paths ?? {};
@@ -57,6 +90,7 @@ export function buildTools(
         security,
         tags: op.tags?.length ? [...op.tags] : undefined,
         outputSchema,
+        annotations: deriveAnnotations(method, destructiveMethods),
       });
     }
   }

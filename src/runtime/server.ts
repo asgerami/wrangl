@@ -1,8 +1,12 @@
 import {
   McpServer,
+  inputRequired,
+  inputResponse,
+  type CallToolResult,
+  type InputRequiredResult,
   type RegisteredTool,
-} from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+  type ServerContext,
+} from "@modelcontextprotocol/server";
 import type { GeneratedServer, ToolDef } from "../types.js";
 import { toolInputShape, toolOutputShape } from "../generator/schema.js";
 import { diffTools, type SpecDiff } from "../generator/diff.js";
@@ -12,6 +16,7 @@ import {
   type RequestLog,
 } from "./proxy.js";
 import { type CredentialStore } from "./auth.js";
+import { confirmationCodec, digestArgs, type ConfirmationState } from "./confirmation.js";
 
 export interface RuntimeOptions {
   creds: CredentialStore;
@@ -19,6 +24,15 @@ export interface RuntimeOptions {
   onLog?: (entry: RequestLog) => void;
   /** Refresh OAuth tokens on a 401 and signal whether to retry (see ProxyContext). */
   onUnauthorized?: (oauthSchemes: string[]) => Promise<boolean>;
+  /**
+   * Gate destructive tool calls (`annotations.destructiveHint`) behind an
+   * MRTR confirmation prompt before executing. `true` (default): confirm
+   * every destructive tool. `false`: never confirm. A predicate: confirm only
+   * the tools it returns `true` for. Confirmation works for both 2026-07-28
+   * clients (native `input_required`) and pre-2026 clients (the SDK's legacy
+   * MRTR shim translates it into a real server-initiated elicitation).
+   */
+  confirmDestructive?: boolean | ((tool: ToolDef) => boolean);
 }
 
 /** A live MCP server that can hot-reload its tools when the spec changes. */
@@ -51,10 +65,10 @@ export function createReloadableServer(
   generated: GeneratedServer,
   opts: RuntimeOptions,
 ): ReloadableServer {
-  const server = new McpServer({
-    name: generated.name,
-    version: generated.version,
-  });
+  const server = new McpServer(
+    { name: generated.name, version: generated.version },
+    { requestState: { verify: confirmationCodec().verify } },
+  );
 
   // Mutable context so reloads can repoint baseUrl/schemes without rebuilding
   // every tool callback (the callbacks close over this object by reference).
@@ -68,7 +82,7 @@ export function createReloadableServer(
 
   const registered = new Map<string, RegisteredTool>();
   const byName = new Map<string, ToolDef>();
-  for (const tool of generated.tools) registerOne(server, tool, ctx, registered, byName);
+  for (const tool of generated.tools) registerOne(server, tool, ctx, opts, registered, byName);
 
   function reload(next: GeneratedServer): SpecDiff {
     const diff = diffTools([...byName.values()], next.tools);
@@ -81,8 +95,8 @@ export function createReloadableServer(
     // with fresh schemas and a callback bound to the new ToolDef.
     for (const name of diff.removed) dropOne(name, registered, byName);
     for (const c of diff.changed) dropOne(c.name, registered, byName);
-    for (const c of diff.changed) registerOne(server, nextByName.get(c.name)!, ctx, registered, byName);
-    for (const name of diff.added) registerOne(server, nextByName.get(name)!, ctx, registered, byName);
+    for (const c of diff.changed) registerOne(server, nextByName.get(c.name)!, ctx, opts, registered, byName);
+    for (const name of diff.added) registerOne(server, nextByName.get(name)!, ctx, opts, registered, byName);
 
     return diff;
   }
@@ -100,23 +114,93 @@ function dropOne(
   byName.delete(name);
 }
 
+/** Whether calling `tool` should be gated behind a confirmation prompt. */
+function needsConfirmation(tool: ToolDef, opts: RuntimeOptions): boolean {
+  if (!tool.annotations?.destructiveHint) return false;
+  const gate = opts.confirmDestructive ?? true;
+  return typeof gate === "function" ? gate(tool) : gate;
+}
+
+const CONFIRM_KEY = "confirm";
+const CONFIRM_SCHEMA = {
+  type: "object" as const,
+  properties: {
+    confirm: {
+      type: "boolean" as const,
+      title: "Confirm",
+      description: "Proceed with this action? It cannot be undone.",
+    },
+  },
+  required: ["confirm"],
+};
+
+/** Build the confirmation prompt for a destructive call not yet confirmed. */
+async function requestConfirmation(
+  tool: ToolDef,
+  args: Record<string, unknown>,
+  mcp: ServerContext,
+): Promise<InputRequiredResult> {
+  const codec = confirmationCodec();
+  return inputRequired({
+    inputRequests: {
+      [CONFIRM_KEY]: inputRequired.elicit({
+        message: `Confirm ${tool.method} ${tool.pathTemplate}? This action is destructive and cannot be undone.`,
+        requestedSchema: CONFIRM_SCHEMA,
+      }),
+    },
+    requestState: await codec.mint(
+      { tool: tool.name, argsDigest: digestArgs(args) } satisfies ConfirmationState,
+      mcp,
+    ),
+  });
+}
+
 function registerOne(
   server: McpServer,
   tool: ToolDef,
   ctx: ProxyContext,
+  opts: RuntimeOptions,
   registered: Map<string, RegisteredTool>,
   byName: Map<string, ToolDef>,
 ): void {
   const outputSchema = toolOutputShape(tool);
+  const confirmable = needsConfirmation(tool, opts);
+
   const handle = server.registerTool(
     tool.name,
     {
       description: tool.description,
       inputSchema: toolInputShape(tool),
       ...(outputSchema ? { outputSchema } : {}),
+      ...(tool.annotations ? { annotations: tool.annotations } : {}),
     },
-    async (args: Record<string, unknown>): Promise<CallToolResult> => {
-      const result = await executeTool(tool, args ?? {}, ctx);
+    async (
+      rawArgs: Record<string, unknown>,
+      mcp: ServerContext,
+    ): Promise<CallToolResult | InputRequiredResult> => {
+      const args = rawArgs ?? {};
+
+      if (confirmable) {
+        const view = inputResponse(mcp.mcpReq.inputResponses, CONFIRM_KEY);
+        if (view.kind === "elicit" && view.action === "decline") {
+          return { isError: true, content: [{ type: "text", text: "Cancelled: user declined to confirm." }] };
+        }
+        if (view.kind === "elicit" && view.action === "cancel") {
+          return { isError: true, content: [{ type: "text", text: "Cancelled: no confirmation was provided." }] };
+        }
+
+        const state = mcp.mcpReq.requestState<ConfirmationState>();
+        const confirmed = view.kind === "elicit" && view.action === "accept";
+        // The requestState must match THIS exact call (spec: bind requestState
+        // to an identifier for the originating request) — otherwise a
+        // confirmation minted for one call could be replayed onto another.
+        const matches = state?.tool === tool.name && state?.argsDigest === digestArgs(args);
+        if (!confirmed || !matches) {
+          return requestConfirmation(tool, args, mcp);
+        }
+      }
+
+      const result = await executeTool(tool, args, ctx);
       const base: CallToolResult = {
         // Surface HTTP errors to the agent rather than throwing, so it can
         // adapt (retry, fix params) instead of seeing an opaque failure.

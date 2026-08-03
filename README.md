@@ -76,6 +76,10 @@ npm run start -- install https://petstore3.swagger.io
 - **Production-ready.** Docker image, per-server tokens and rate limits, admin
   auth, automatic retry with backoff on transient upstream failures, and a
   Postgres backend for running multiple replicas.
+- **Current on the protocol.** Targets MCP `2026-07-28` (the stateless,
+  per-request revision) while still serving every earlier client from the
+  same tools. Destructive tools (`DELETE` by default) require agent
+  confirmation before they run, via MCP's multi-round-trip request pattern.
 
 ## How it works
 

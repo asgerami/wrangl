@@ -9,6 +9,33 @@ While the project is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **MCP protocol `2026-07-28` support.** The runtime now targets the
+  stateless, per-request revision of MCP — migrated from
+  `@modelcontextprotocol/sdk` v1 to the new `@modelcontextprotocol/server` v2
+  SDK (`createMcpHandler` for HTTP, `serveStdio` for stdio), used by the CLI's
+  `generate --transport http|stdio` and the hosted control plane's
+  `/servers/:id/mcp` endpoint alike. One tool registration now serves both
+  `2026-07-28` clients (native `resultType`, `ttlMs`/`cacheScope` cache hints
+  on `tools/list`) and every earlier client (`2025-11-25` and back) via the
+  SDK's built-in legacy fallback — verified end-to-end against both a raw
+  modern HTTP exchange and the existing `@modelcontextprotocol/sdk` v1
+  client/`InMemoryTransport` test suite.
+- **Tool annotations.** Every generated tool now carries `readOnlyHint` /
+  `destructiveHint` / `idempotentHint` / `openWorldHint`, derived from the
+  HTTP verb (`GET`/`HEAD` read-only; `DELETE`/`PUT`/`PATCH` destructive by
+  default, overridable via `destructiveMethods`; `POST` neither).
+- **Destructive-action confirmation.** Tools with `destructiveHint: true` now
+  require an agent-confirmed elicitation before they execute, using MCP's
+  multi-round-trip request (MRTR) pattern. The `requestState` binding a
+  confirmation to its exact call is HMAC-SHA256 signed and digest-bound to
+  the call's arguments (via the SDK's `createRequestStateCodec`) — a
+  confirmation for one call can't be replayed onto another, and a tampered or
+  expired token is rejected rather than silently honored. Configurable via
+  `RuntimeOptions.confirmDestructive`; keyed by `WRANGL_SECRET_KEY` (falls
+  back to a random per-process key with a startup warning if unset).
+
 ## [0.3.0] - 2026-07-20
 
 ### Added

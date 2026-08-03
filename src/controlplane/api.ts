@@ -1,6 +1,10 @@
-import { randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from "fastify";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import {
+  createMcpHandler,
+  type McpHttpHandler,
+  type McpServerFactory,
+} from "@modelcontextprotocol/server";
+import { toNodeHandler } from "@modelcontextprotocol/node";
 import { createMcpServer } from "../runtime/server.js";
 import { executeTool } from "../runtime/proxy.js";
 import { formatDiff } from "../generator/diff.js";
@@ -36,8 +40,32 @@ export function buildControlPlane(
   const oauth = opts.oauth;
   const rateLimiter = new RateLimiter(opts.rateLimitPerMin ?? 0);
 
-  // Per-server map of MCP session id → transport, for the hosted endpoint.
-  const sessionsByServer = new Map<string, Map<string, StreamableHTTPServerTransport>>();
+  // Per-server MCP HTTP handler for the hosted endpoint. createMcpHandler
+  // serves both 2026-07-28 (per-request, stateless) and pre-2026 (session-
+  // based) clients from the one factory; the factory re-resolves the entry
+  // on every call, so a regenerate reaches the very next request.
+  const handlersByServer = new Map<string, { handler: McpHttpHandler; node: ReturnType<typeof toNodeHandler> }>();
+
+  const handlerFor = (id: string) => {
+    let cached = handlersByServer.get(id);
+    if (cached) return cached;
+    const factory: McpServerFactory = async () => {
+      const entry = await resolveServer(id);
+      if (!entry) throw new Error(`Server "${id}" no longer exists.`);
+      return createMcpServer(entry.generated, {
+        creds: entry.creds,
+        onLog: (e) => registry.recordLog(id, e),
+        onUnauthorized: oauthRefresher(id),
+      });
+    };
+    const handler = createMcpHandler(factory, {
+      legacy: "stateless",
+      onerror: (err) => console.error(`MCP handler error for server "${id}":`, err),
+    });
+    cached = { handler, node: toNodeHandler(handler) };
+    handlersByServer.set(id, cached);
+    return cached;
+  };
 
   // Resolve a server by id, reading through the shared store on a cache miss so
   // this replica can serve servers another replica created. OAuth tokens are
@@ -284,7 +312,9 @@ export function buildControlPlane(
     if (!(await resolveServer(idParam(request)))) return notFound(reply);
     const ok = await registry.remove(idParam(request));
     if (!ok) return notFound(reply);
-    sessionsByServer.delete(idParam(request));
+    const id = idParam(request);
+    await handlersByServer.get(id)?.handler.close();
+    handlersByServer.delete(id);
     return reply.code(204).send();
   });
 
@@ -389,33 +419,9 @@ export function buildControlPlane(
       return reply.code(429).send({ error: "Rate limit exceeded for this server." });
     }
 
-    const sessions = sessionsByServer.get(id) ?? new Map();
-    sessionsByServer.set(id, sessions);
-
-    const sessionId = request.headers["mcp-session-id"] as string | undefined;
-    let transport = sessionId ? sessions.get(sessionId) : undefined;
-
-    if (!transport) {
-      transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-        onsessioninitialized: (sid) => {
-          sessions.set(sid, transport!);
-        },
-      });
-      transport.onclose = () => {
-        if (transport!.sessionId) sessions.delete(transport!.sessionId);
-      };
-      const server = createMcpServer(entry.generated, {
-        creds: entry.creds,
-        onLog: (e) => registry.recordLog(id, e),
-        onUnauthorized: oauthRefresher(id),
-      });
-      await server.connect(transport);
-    }
-
-    // Hand the raw socket to the MCP transport; Fastify must not also respond.
+    // Hand the raw socket to the MCP handler; Fastify must not also respond.
     reply.hijack();
-    await transport.handleRequest(request.raw, reply.raw, request.body);
+    await handlerFor(id).node(request.raw, reply.raw, request.body);
   });
 
   return app;
