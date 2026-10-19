@@ -76,7 +76,7 @@ What that means in practice:
 
 ## CLI reference
 
-```
+```text
 wrangl install <api> [options]     Discover, generate, and wire into your agent client
   -c, --client <name>     Agent client to configure: claude | cursor | windsurf |
                           cline | zed | vscode (default claude)
@@ -130,6 +130,10 @@ wrangl logs [options]
 The CLI auto-loads `.env.local` then `.env` from the working directory on
 startup, so `wrangl serve` picks up secrets without a launcher flag (a real
 shell environment variable still wins). `.env*.local` is gitignored.
+
+Running `npx @asgerami/wrangl` from inside a clone of this repo resolves to the
+local checkout, so it needs a build first. If it says `wrangl: command not
+found`, run `npm run build` once (or run `npx` from any other directory).
 
 ## Connecting to your agent
 
@@ -291,7 +295,7 @@ wrangl logs --tool get_post --status 200
 wrangl logs --tail
 ```
 
-```
+```text
 2026-06-24T18:34:06.899Z  [200] GET get_post (JSONPlaceholder) 142ms
 2026-06-24T18:34:06.957Z  [401] POST create_post (JSONPlaceholder) 88ms
 ```
@@ -311,7 +315,7 @@ without reconnecting.
 wrangl generate --spec ./api.yaml --watch 30
 ```
 
-```
+```text
 spec changed:
 +1 added  ~1 changed  -0 removed
   + get_user_by_id
@@ -388,7 +392,7 @@ need an authorization URL.
 **OpenID Connect.** Specs with `type: openIdConnect` are ingested; configuring
 OAuth fetches the discovery document for authorize/token endpoints.
 
-```
+```text
 POST /servers/:id/oauth/:scheme/config               {clientId, clientSecret?, ...}
 GET  /servers/:id/oauth/:scheme/authorize            provider consent URL
 POST /servers/:id/oauth/:scheme/client-credentials   M2M token grant
@@ -510,17 +514,19 @@ await serveStdio(server);
 
 ## Project layout
 
-```
+```text
 src/
   parser/openapi.ts     Ingestion: load, validate, normalize a spec
   parser/postman.ts     Postman collection to canonical OpenAPI
   parser/discover.ts    Auto-discover a spec under a base URL
   generator/tools.ts    Map endpoints to MCP tool definitions
   generator/schema.ts   JSON Schema to Zod input/output shapes
+  generator/filter.ts   --include / --exclude glob matching
   generator/enrich.ts   LLM semantic-enrichment pass (Claude, structured output)
   generator/diff.ts     Diff two tool sets for live reload
   runtime/auth.ts       Credential resolution + auth injection
   runtime/proxy.ts      Build and execute the upstream HTTP request
+  runtime/confirmation.ts  Signed confirmations for destructive tools
   runtime/logstore.ts   Usage-log store interface + SQLite backend
   runtime/server.ts     Assemble a live (reloadable) McpServer from a spec
   runtime/watch.ts      Poll a spec and fire on change (live sync)
@@ -537,6 +543,8 @@ src/
   controlplane/seed.ts           Prebuilt server anchors + catalog
   clients.ts            Write servers into supported agent clients' configs
   cli.ts                install / add / catalog / generate / inspect / logs / serve
+  index.ts              Public library API
+  types.ts              Core types shared across the pipeline
 prebuilt/               Catalog manifest + bundled specs
 examples/               Sample specs to try
 test/                   Unit, network, and e2e tests
