@@ -29,6 +29,14 @@ While the project is pre-1.0, minor versions may include breaking changes.
   logged the full request URL, including an API key injected into the query
   string. It now logs the redacted URL, like successful calls do.
 
+### Security
+
+- **Cleared all 13 `npm audit` advisories** (1 critical, 9 high, 3
+  moderate) by updating dependencies within their existing semver ranges,
+  including `@modelcontextprotocol/server` 2.0.0 → 2.4.0, `fastify` 5.8.5 →
+  5.12.7, `zod` 4.4.3 → 4.6.7, and `proxy-addr` 2.0.7 → 2.0.8. Lockfile
+  only; `package.json` is unchanged.
+
 ## [0.4.0] - 2026-08-04
 
 ### Added
