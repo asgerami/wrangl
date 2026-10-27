@@ -1,7 +1,7 @@
 {
   "name": "@asgerami/wrangl",
   "version": "0.4.0",
-  "description": "Turn any REST API into an agent-ready MCP server in minutes.",
+  "description": "Turn any REST API into an agent-ready MCP server in one command. Works from an OpenAPI spec, a Postman collection, or a base URL.",
   "type": "module",
   "publishConfig": {
     "access": "public"
@@ -23,7 +23,10 @@
   "bugs": {
     "url": "https://github.com/asgerami/wrangl/issues"
   },
-  "author": "asgerami",
+  "author": {
+    "name": "asgerami",
+    "url": "https://github.com/asgerami"
+  },
   "scripts": {
     "build": "tsc && cp src/controlplane/dashboard.html dist/controlplane/dashboard.html && node scripts/ensure-bin.mjs",
     "dev": "tsx src/cli.ts",
@@ -38,10 +41,17 @@
   },
   "keywords": [
     "mcp",
+    "mcp-server",
     "model-context-protocol",
     "openapi",
+    "swagger",
+    "postman",
+    "rest-api",
     "ai-agents",
-    "rest-api"
+    "llm",
+    "claude",
+    "cursor",
+    "cli"
   ],
   "license": "MIT",
   "dependencies": {
