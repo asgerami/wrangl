@@ -182,6 +182,46 @@ test("a failed request is logged without its query-string credentials", async ()
   assert.ok(!JSON.stringify(logs).includes("sk-secret"));
 });
 
+test("a hanging upstream times out — retried for a GET, never re-sent for a POST", async () => {
+  let hits = 0;
+  // Accept every request and never answer.
+  const server = createServer(() => {
+    hits++;
+  });
+  const port = await listen(server);
+
+  try {
+    const ctx: ProxyContext = { baseUrl: `http://127.0.0.1:${port}`, schemes: {}, creds: {}, maxRetries: 1, timeoutMs: 50 };
+    for (const [method, expectedHits] of [["GET", 2], ["POST", 1]] as const) {
+      hits = 0;
+      await assert.rejects(
+        () => executeTool(tool({ method }), {}, ctx),
+        { message: "Upstream request failed: timed out after 50ms" },
+      );
+      assert.equal(hits, expectedHits, `${method} attempts`);
+    }
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+});
+
+test("the timeout also covers a response body that stalls after the headers", async () => {
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.write('{"partial":'); // ...and never finish
+  });
+  const port = await listen(server);
+
+  try {
+    const ctx: ProxyContext = { baseUrl: `http://127.0.0.1:${port}`, schemes: {}, creds: {}, maxRetries: 0, timeoutMs: 50 };
+    await assert.rejects(() => executeTool(tool(), {}, ctx), /timed out after 50ms/);
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+});
+
 test("a 4xx response is never retried", async () => {
   let hits = 0;
   const server = createServer((_req, res) => {

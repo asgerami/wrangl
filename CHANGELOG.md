@@ -28,6 +28,11 @@ While the project is pre-1.0, minor versions may include breaking changes.
 - **Failed requests no longer log query-string credentials.** The error path
   logged the full request URL, including an API key injected into the query
   string. It now logs the redacted URL, like successful calls do.
+- **Upstream calls time out.** The proxy's `fetch` had no deadline, so an
+  API that never answered (or stalled mid-body) hung the tool call
+  indefinitely. Each attempt now has a 60s deadline covering the response
+  body, configurable via `ProxyContext.timeoutMs`. A timeout counts as a
+  network error: retried for idempotent methods, never for POST/PATCH.
 
 ### Security
 

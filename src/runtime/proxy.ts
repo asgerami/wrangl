@@ -21,6 +21,14 @@ export interface ProxyContext {
    * write. Default 2; set 0 to disable.
    */
   maxRetries?: number;
+  /**
+   * Per-attempt deadline for an upstream call in ms, covering the response
+   * body as well as the headers. A timeout counts as a network error: retried
+   * for idempotent methods, never for POST/PATCH. Default 60000, matching the
+   * MCP TypeScript SDK's default client request timeout — past that, most
+   * agents have already given up on the call.
+   */
+  timeoutMs?: number;
 }
 
 export interface RequestLog {
@@ -46,6 +54,7 @@ const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "OPTIONS", "PUT", "DELETE"]);
 const DEFAULT_MAX_RETRIES = 2;
 const RETRY_BASE_DELAY_MS = 250;
 const RETRY_MAX_DELAY_MS = 2000;
+const DEFAULT_TIMEOUT_MS = 60_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -83,6 +92,7 @@ export async function executeTool(
   const start = performance.now();
   const maxRetries = ctx.maxRetries ?? DEFAULT_MAX_RETRIES;
   const canRetry = IDEMPOTENT_METHODS.has(tool.method.toUpperCase());
+  const timeoutMs = ctx.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   const logFailure = (url: string, err: unknown): string => {
     const message = err instanceof Error ? err.message : String(err);
@@ -117,6 +127,7 @@ export async function executeTool(
         method: tool.method,
         headers: built.headers,
         body: built.body,
+        signal: AbortSignal.timeout(timeoutMs),
       });
 
       // On a 401 for an OAuth2-secured tool, refresh the token and retry once.
@@ -130,6 +141,7 @@ export async function executeTool(
             method: tool.method,
             headers: built.headers,
             body: built.body,
+            signal: AbortSignal.timeout(timeoutMs),
           });
         }
       }
@@ -165,7 +177,12 @@ export async function executeTool(
         responseBody: truncate(body),
       });
       return result;
-    } catch (err) {
+    } catch (caught) {
+      // The timeout rejects with a bare "operation was aborted"; say what happened.
+      const err =
+        caught instanceof Error && caught.name === "TimeoutError"
+          ? new Error(`timed out after ${timeoutMs}ms`)
+          : caught;
       if (canRetry && attempt < maxRetries) {
         const message = err instanceof Error ? err.message : String(err);
         console.error(
