@@ -16,7 +16,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
+          # No dependency cache: a poisoned cache must never reach a release.
           registry-url: https://registry.npmjs.org
       - run: npm ci
       - run: npm run typecheck
@@ -40,7 +40,11 @@ jobs:
           else
             echo "published=false" >> "$GITHUB_OUTPUT"
           fi
-      - run: npm publish --access public --provenance
+      # Trusted publishing: npm authenticates this workflow through GitHub's
+      # OIDC token (hence `id-token: write`), so no npm token is stored, and
+      # provenance is generated automatically. Needs npm >= 11.5.1.
+      - name: Install npm with trusted-publishing support
         if: steps.check.outputs.published == 'false'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm install -g npm@^11.5.1 && npm --version
+      - run: npm publish --access public
+        if: steps.check.outputs.published == 'false'
