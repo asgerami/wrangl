@@ -45,7 +45,68 @@ function queryParam(
   };
 }
 
+function pathTool(pathTemplate: string, names: string[]): ToolDef {
+  return {
+    name: "t",
+    description: "",
+    method: "GET",
+    pathTemplate,
+    params: names.map((name) => ({
+      name,
+      sourceName: name,
+      location: "path" as const,
+      required: true,
+      schema: { type: "string" },
+      style: "simple" as const,
+      explode: false,
+    })),
+    body: undefined,
+    security: [],
+  };
+}
+
 const ctx = (baseUrl: string) => ({ baseUrl, schemes: {}, creds: {} });
+
+test("path parameters can't climb out of the endpoint with . or ..", async () => {
+  const srv = await captureServer();
+  try {
+    const photos = pathTool("/api/pets/{petId}/photos", ["petId"]);
+    // Unchecked, ".." would resolve to GET /api/photos — a different endpoint.
+    for (const petId of ["..", "."]) {
+      await assert.rejects(
+        () => executeTool(photos, { petId }, ctx(srv.baseUrl)),
+        /path parameters can't be "\." or "\.\."/,
+      );
+    }
+    // Two placeholders sharing one segment can't assemble ".." either.
+    await assert.rejects(
+      () => executeTool(pathTool("/x/{a}{b}", ["a", "b"]), { a: ".", b: "." }, ctx(srv.baseUrl)),
+      /path parameters can't be/,
+    );
+    assert.equal(srv.last().url, "", "no request may reach the upstream");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("path parameters that only contain dots or slashes stay in their segment", async () => {
+  const srv = await captureServer();
+  try {
+    const photos = pathTool("/api/pets/{petId}/photos", ["petId"]);
+    const cases: Array<[string, string]> = [
+      ["...", "/api/pets/.../photos"],
+      ["v1.2", "/api/pets/v1.2/photos"],
+      ["../admin", "/api/pets/..%2Fadmin/photos"],
+      ["%2e%2e", "/api/pets/%252e%252e/photos"],
+    ];
+    for (const [petId, expected] of cases) {
+      await executeTool(photos, { petId }, ctx(srv.baseUrl));
+      assert.equal(srv.last().url, expected);
+    }
+  } finally {
+    await srv.close();
+  }
+});
 
 test("form + explode arrays repeat the key", async () => {
   const srv = await captureServer();

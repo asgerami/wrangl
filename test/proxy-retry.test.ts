@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { executeTool } from "../src/runtime/proxy.js";
-import type { ProxyContext } from "../src/runtime/proxy.js";
+import type { ProxyContext, RequestLog } from "../src/runtime/proxy.js";
 import type { ToolDef } from "../src/types.js";
 
 function tool(overrides: Partial<ToolDef> = {}): ToolDef {
@@ -109,6 +109,77 @@ test("a network error is retried and eventually throws a clear error", async () 
     () => executeTool(tool(), {}, ctx),
     /Upstream request failed/,
   );
+});
+
+test("a POST or PATCH is not re-sent after a network error — it may have reached the server", async () => {
+  let hits = 0;
+  // Accept the request, then drop the connection before responding: the write
+  // may have run upstream even though the client only sees a network error.
+  const server = createServer((req) => {
+    hits++;
+    req.socket.destroy();
+  });
+  const port = await listen(server);
+
+  try {
+    const ctx: ProxyContext = { baseUrl: `http://127.0.0.1:${port}`, schemes: {}, creds: {}, maxRetries: 2 };
+    for (const method of ["POST", "PATCH"]) {
+      hits = 0;
+      await assert.rejects(() => executeTool(tool({ method }), {}, ctx), /Upstream request failed/);
+      assert.equal(hits, 1, `${method} must not be re-sent after a network error`);
+    }
+  } finally {
+    server.close();
+  }
+});
+
+test("an invalid argument fails at once — no retries, no upstream call, no 'upstream' label", async () => {
+  let hits = 0;
+  const server = createServer((_req, res) => {
+    hits++;
+    res.writeHead(200).end("{}");
+  });
+  const port = await listen(server);
+
+  try {
+    const logs: RequestLog[] = [];
+    const ctx: ProxyContext = {
+      baseUrl: `http://127.0.0.1:${port}`,
+      schemes: {},
+      creds: {},
+      maxRetries: 2,
+      onLog: (entry) => logs.push(entry),
+    };
+    const needsQ = tool({
+      params: [
+        { name: "q", sourceName: "q", location: "query", required: true, schema: { type: "string" }, style: "form", explode: true },
+      ],
+    });
+    await assert.rejects(() => executeTool(needsQ, {}, ctx), {
+      message: 'Missing required parameter "q".',
+    });
+    assert.equal(hits, 0, "a request that can't be built must never be sent");
+    assert.equal(logs.length, 1, "the rejected call is still logged once");
+    assert.equal(logs[0].error, 'Missing required parameter "q".');
+  } finally {
+    server.close();
+  }
+});
+
+test("a failed request is logged without its query-string credentials", async () => {
+  const logs: RequestLog[] = [];
+  // Nothing listens on this port.
+  const ctx: ProxyContext = {
+    baseUrl: "http://127.0.0.1:1",
+    schemes: { key: { type: "apiKey", name: "key", in: "query", paramName: "api_key" } },
+    creds: { key: "sk-secret" },
+    maxRetries: 0,
+    onLog: (entry) => logs.push(entry),
+  };
+  await assert.rejects(() => executeTool(tool({ security: ["key"] }), {}, ctx), /Upstream request failed/);
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0].url, "http://127.0.0.1:1/");
+  assert.ok(!JSON.stringify(logs).includes("sk-secret"));
 });
 
 test("a 4xx response is never retried", async () => {

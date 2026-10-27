@@ -14,10 +14,11 @@ export interface ProxyContext {
    */
   onUnauthorized?: (oauthSchemes: string[]) => Promise<boolean>;
   /**
-   * Max automatic retries for transient upstream failures: network errors, or
-   * a 5xx response to a method with no side effects to duplicate (GET, HEAD,
-   * OPTIONS, PUT, DELETE — never POST/PATCH, to avoid re-running a write whose
-   * response was merely lost). Default 2; set 0 to disable.
+   * Max automatic retries for transient upstream failures (network errors or a
+   * 5xx response), for methods with no side effect to duplicate: GET, HEAD,
+   * OPTIONS, PUT, DELETE. POST/PATCH are never retried — a request that failed
+   * mid-flight may still have run upstream, and re-sending it could repeat a
+   * write. Default 2; set 0 to disable.
    */
   maxRetries?: number;
 }
@@ -81,14 +82,37 @@ export async function executeTool(
 ): Promise<ProxyResult> {
   const start = performance.now();
   const maxRetries = ctx.maxRetries ?? DEFAULT_MAX_RETRIES;
-  const canRetryStatus = IDEMPOTENT_METHODS.has(tool.method.toUpperCase());
-  let url = "";
+  const canRetry = IDEMPOTENT_METHODS.has(tool.method.toUpperCase());
+
+  const logFailure = (url: string, err: unknown): string => {
+    const message = err instanceof Error ? err.message : String(err);
+    ctx.onLog?.({
+      tool: tool.name,
+      method: tool.method,
+      url,
+      latencyMs: Math.round(performance.now() - start),
+      error: message,
+      requestBody: truncate(JSON.stringify(args)),
+    });
+    return message;
+  };
+
+  // Building the request is deterministic — a bad argument fails the same way
+  // every time — so it happens once, before the retry loop: it's never retried,
+  // and its error reaches the caller as-is rather than posing as an upstream
+  // failure. It's still logged, so rejected calls show up in Usage Logs.
+  let built: BuiltRequest;
+  try {
+    built = buildRequest(tool, args, ctx);
+  } catch (err) {
+    logFailure(joinUrl(ctx.baseUrl, tool.pathTemplate), err);
+    throw err;
+  }
+  // Redacted, since query-string credentials are injected into built.url.
+  const url = redactUrl(built.url);
 
   for (let attempt = 0; ; attempt++) {
     try {
-      let built = buildRequest(tool, args, ctx);
-      url = built.url.toString();
-
       let response = await fetch(built.url, {
         method: tool.method,
         headers: built.headers,
@@ -111,7 +135,7 @@ export async function executeTool(
       }
 
       if (
-        canRetryStatus &&
+        canRetry &&
         RETRYABLE_STATUSES.has(response.status) &&
         attempt < maxRetries
       ) {
@@ -134,7 +158,7 @@ export async function executeTool(
       ctx.onLog?.({
         tool: tool.name,
         method: tool.method,
-        url: redactUrl(built.url),
+        url,
         statusCode: response.status,
         latencyMs: Math.round(performance.now() - start),
         requestBody: truncate(JSON.stringify(args)),
@@ -142,24 +166,16 @@ export async function executeTool(
       });
       return result;
     } catch (err) {
-      if (attempt < maxRetries) {
+      if (canRetry && attempt < maxRetries) {
         const message = err instanceof Error ? err.message : String(err);
         console.error(
-          `⚠ ${tool.method} ${url || tool.pathTemplate} failed (${message}); retrying (${attempt + 1}/${maxRetries})…`,
+          `⚠ ${tool.method} ${url} failed (${message}); retrying (${attempt + 1}/${maxRetries})…`,
         );
         await sleep(backoffDelay(attempt));
         continue;
       }
 
-      const message = err instanceof Error ? err.message : String(err);
-      ctx.onLog?.({
-        tool: tool.name,
-        method: tool.method,
-        url,
-        latencyMs: Math.round(performance.now() - start),
-        error: message,
-        requestBody: truncate(JSON.stringify(args)),
-      });
+      const message = logFailure(url, err);
       throw new Error(`Upstream request failed: ${message}`);
     }
   }
@@ -210,6 +226,17 @@ function buildRequest(
         );
         break;
     }
+  }
+
+  // URL parsing resolves "." and ".." segments, so an argument like ".." would
+  // climb out of this tool's endpoint onto another on the same host, with the
+  // credentials still injected. encodeURIComponent leaves dots alone, so refuse
+  // any such segment outright.
+  if (path.split("/").some((segment) => segment === "." || segment === "..")) {
+    throw new Error(
+      `Invalid path "${path}": path parameters can't be "." or "..", which would ` +
+        `redirect the call to a different endpoint.`,
+    );
   }
 
   let body: string | undefined;

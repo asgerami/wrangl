@@ -9,6 +9,26 @@ While the project is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **POST/PATCH are no longer re-sent after a network error.** The retry
+  guard covered 5xx responses but not network errors, so a POST whose
+  connection dropped after the upstream received it was sent up to three
+  times. Network-error retries are now limited to the same idempotent methods
+  (GET, HEAD, OPTIONS, PUT, DELETE) as 5xx retries.
+- **Path parameters can't escape their endpoint.** A path argument of `.` or
+  `..` was resolved by URL parsing, so a call could reach a different
+  endpoint on the same host (bypassing `--include` / `--exclude`) with the
+  credentials still injected. Such values are now rejected before any request
+  is sent.
+- **Invalid arguments fail immediately.** A request that can't be built (e.g.
+  a missing required parameter) was retried with backoff and then reported as
+  "Upstream request failed". It now fails at once with the real error, and is
+  still logged.
+- **Failed requests no longer log query-string credentials.** The error path
+  logged the full request URL, including an API key injected into the query
+  string. It now logs the redacted URL, like successful calls do.
+
 ## [0.4.0] - 2026-08-04
 
 ### Added
