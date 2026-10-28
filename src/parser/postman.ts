@@ -113,7 +113,7 @@ export function postmanToOpenAPI(collection: PostmanCollection): OpenAPIDoc {
       if (derivedBase && !baseUrl) baseUrl = derivedBase;
 
       const pathTemplate = buildPath(url);
-      const operation = toOperation(item, req, url);
+      const operation = toOperation(item, req, url, vars);
 
       // Map auth (request-level overrides collection-level) to a security scheme.
       const auth = req.auth ?? collection.auth;
@@ -156,22 +156,26 @@ function toOperation(
   item: PostmanItem,
   req: PostmanRequest,
   url: PostmanUrl,
+  vars: Map<string, string>,
 ): Operation {
   const params: RawParameter[] = [];
 
-  // Path variables: from `:segment` tokens and url.variable descriptions.
+  // Path variables: `:name` and `{{name}}` segments, described by url.variable.
+  // A collection value for a `{{name}}` is usually an example id, not a
+  // constant, so it's offered as an example rather than baked into the path.
   const pathVarDescriptions = new Map(
     (url.variable ?? []).map((v) => [v.key, v.description]),
   );
   for (const segment of url.path ?? []) {
-    const raw = typeof segment === "string" ? segment : (segment?.value ?? "");
-    if (raw.startsWith(":")) {
-      const name = raw.slice(1);
+    const name = pathVariable(segment);
+    if (name && !params.some((p) => p.name === name)) {
+      const example = vars.get(name);
       params.push({
         name,
         in: "path",
         required: true,
-        description: pathVarDescriptions.get(name),
+        description:
+          pathVarDescriptions.get(name) ?? (example ? `For example: ${example}` : undefined),
         schema: { type: "string" },
       });
     }
@@ -338,11 +342,18 @@ function parseRawUrl(raw: string): PostmanUrl {
 
 function buildPath(url: PostmanUrl): string {
   const segments = (url.path ?? []).map((s) => {
-    const raw = typeof s === "string" ? s : (s?.value ?? "");
-    // Postman path variables `:id` → OpenAPI `{id}`.
-    return raw.startsWith(":") ? `{${raw.slice(1)}}` : raw;
+    const name = pathVariable(s);
+    // Postman path variables `:id` and `{{id}}` → OpenAPI `{id}`.
+    return name ? `{${name}}` : typeof s === "string" ? s : (s?.value ?? "");
   });
   return "/" + segments.join("/");
+}
+
+/** The variable a whole path segment stands for (`:id` or `{{id}}`), if any. */
+function pathVariable(segment: string | { value?: string }): string | undefined {
+  const raw = typeof segment === "string" ? segment : (segment?.value ?? "");
+  if (raw.startsWith(":") && raw.length > 1) return raw.slice(1);
+  return /^\{\{([^{}]+)\}\}$/.exec(raw)?.[1].trim();
 }
 
 function deriveBaseUrl(

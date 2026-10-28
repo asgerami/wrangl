@@ -2,7 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { ingest } from "../src/parser/openapi.js";
+import { buildTools } from "../src/generator/tools.js";
+import { executeTool } from "../src/runtime/proxy.js";
 import { isPostmanCollection, postmanToOpenAPI } from "../src/parser/postman.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -78,4 +82,33 @@ test("apikey auth maps to an apiKey security scheme", () => {
     in: "header",
     name: "X-Token",
   });
+});
+
+test("{{variable}} path segments become path parameters", async () => {
+  const doc = postmanToOpenAPI({
+    info: { name: "Vars", schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json" },
+    variable: [
+      { key: "baseUrl", value: "http://127.0.0.1:1" },
+      { key: "userId", value: "42" },
+    ],
+    item: [{ name: "List user posts", request: { method: "GET", url: "{{baseUrl}}/users/{{userId}}/posts" } }],
+  });
+  assert.deepEqual(Object.keys(doc.paths ?? {}), ["/users/{userId}/posts"]);
+  const [tool] = buildTools(doc, {});
+  assert.deepEqual(
+    tool.params.map((p) => [p.sourceName, p.location, p.required, p.description]),
+    [["userId", "path", true, "For example: 42"]],
+  );
+
+  // The call substitutes the argument instead of sending "{{userId}}" upstream.
+  let seen = "";
+  const server = createServer((req, res) => ((seen = req.url ?? ""), res.end("[]")));
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  try {
+    const { port } = server.address() as AddressInfo;
+    await executeTool(tool, { [tool.params[0].name]: "7" }, { baseUrl: `http://127.0.0.1:${port}`, schemes: {}, creds: {} });
+    assert.equal(seen, "/users/7/posts");
+  } finally {
+    server.close();
+  }
 });
