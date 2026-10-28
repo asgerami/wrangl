@@ -22,7 +22,7 @@
       "name": "GitHub",
       "spec": "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
       "auth": "bearer",
-      "tools": 1206,
+      "tools": 1254,
       "note": "Full GitHub REST API. Needs a personal access token."
     },
     {
@@ -30,7 +30,7 @@
       "name": "Stripe",
       "spec": "https://raw.githubusercontent.com/stripe/openapi/master/openapi/spec3.json",
       "auth": "bearer",
-      "tools": 587,
+      "tools": 612,
       "note": "Payments. Use a test-mode secret key."
     },
     {
@@ -38,7 +38,7 @@
       "name": "OpenAI",
       "spec": "https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.yaml",
       "auth": "bearer",
-      "tools": 242,
+      "tools": 376,
       "note": "OpenAI platform API. Needs an API key."
     },
     {
@@ -54,7 +54,7 @@
       "name": "Discord",
       "spec": "https://raw.githubusercontent.com/discord/discord-api-spec/main/specs/openapi.json",
       "auth": "apikey",
-      "tools": 242,
+      "tools": 250,
       "note": "Bot API. Needs the full header value incl. prefix: WRANGL_API_KEY=\"Bot <token>\"."
     },
     {
@@ -78,7 +78,7 @@
       "name": "PagerDuty",
       "spec": "https://raw.githubusercontent.com/PagerDuty/api-schema/main/reference/REST/openapiv3.json",
       "auth": "apikey",
-      "tools": 465,
+      "tools": 473,
       "note": "Needs the full header value incl. prefix: WRANGL_API_KEY=\"Token token=<key>\"."
     }
   ]
