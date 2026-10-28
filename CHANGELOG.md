@@ -9,6 +9,113 @@ While the project is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-28
+
+### Added
+
+- **`--env KEY=value` on `install` and `add`.** Puts an API key (or any
+  variable) in the agent client's config, where the server can see it. The
+  install hint now suggests this: clients like Claude Desktop usually start
+  servers without your shell's environment, so the `export` it used to
+  suggest never reached them.
+- **`--catalog <id>` on `generate` and `inspect`.** Loads a ready-made spec
+  by its catalog id.
+- **`--log-retention <days>` on `serve` and `generate`** (or
+  `WRANGL_LOG_RETENTION_DAYS`). Usage logs older than that are pruned at
+  startup and hourly; `0` keeps them forever.
+- **`scripts/catalog-counts.mjs`** re-counts the tools each catalog entry
+  generates and updates the numbers `wrangl catalog` shows.
+- **Commented config files.** `install` now reads Zed's `settings.json` and
+  VS Code's `mcp.json` with comments and trailing commas (JSONC), and edits
+  them in place: only the server's own entry changes, and every comment and
+  the formatting of other entries survive. Previously these files were
+  refused as invalid JSON.
+
+### Changed
+
+- **The control plane checks the `Host` header when it has no admin token.**
+  It answers only requests addressed to `localhost`, `127.0.0.1`, `[::1]`, the
+  `--host` it's bound to, or the `--public-url` host, and returns 403
+  otherwise. This blocks DNS rebinding, where a web page re-points its own
+  domain at your machine and calls the unauthenticated API from your browser.
+  Set an admin token to serve other host names.
+- **Creating a server whose name is taken gets a new slug** (`api-2`), also
+  when the existing server was created by another replica. Previously a
+  replica that hadn't loaded it reused the slug, overwriting that server's
+  record and inheriting its stored credentials.
+- **The dashboard's tool tester returns 400 for invalid arguments** instead
+  of 502.
+- **Usage logs are kept for 30 days by default.** They hold request and
+  response bodies and used to grow forever. Pass `--log-retention 0` to keep
+  everything.
+- **Enrichment defaults to `claude-opus-5-5`**, which is newer and cheaper per
+  token than `claude-opus-4-8`. On Opus 5.5, Opus 5, and Fable 5.1, a batch the
+  model declines is re-run on `claude-opus-4-8` within the same request (the
+  API's server-side fallback, billed at that model's rates), and a batch that
+  still comes back unenriched is reported instead of skipped silently.
+- **Library: the store interfaces grew.** A custom `ServerStore` must now
+  implement `savePendingAuth`, `takePendingAuth`, and `prunePendingAuth`, and a
+  custom `LogStore` must implement `prune`. `ServerRecord` gains
+  `toolFilter` and `updatedAt`.
+
+### Fixed
+
+- **Installed servers no longer break when npm prunes its cache.** Run
+  through `npx`, `install` wrote the path of npx's cache into the agent's
+  config. It now writes `npx -y @asgerami/wrangl@<version>`, which npx can
+  always re-fetch. Bundled catalog specs are recorded by catalog id instead of
+  by a path inside the package, and a relative spec path is made absolute,
+  since the client starts the server from its own working directory.
+- **Replicas stay in sync.** A replica kept every server it had loaded, so a
+  server deleted, regenerated, or given new credentials on another replica
+  kept being served as it was. Records now carry a version; a replica
+  re-checks its copy against the shared store once it's 5 seconds old, and
+  `GET /servers` reconciles with the store before listing.
+- **OAuth sign-ins work across replicas.** A sign-in in progress was held in
+  one replica's memory, so it failed whenever the provider's redirect reached
+  another. It's now kept in the shared store (encrypted, single-use, expiring
+  after 10 minutes), and other replicas pick up the resulting token.
+- **Postman `{{variable}}` path segments become path parameters.** Only
+  `:variable` was recognized, so `/users/{{userId}}` was sent upstream
+  literally.
+- **Control-plane tool filters work.** `POST /servers` ignored `include` and
+  `exclude`, and the filter was never stored, so a restart, `regenerate`, or
+  another replica brought back the full tool list. Filters are now applied,
+  persisted, and re-applied; a filter that removes every tool is a 400.
+- **The Docker image builds again.** `npm ci` runs the `prepare` script,
+  which lives in `scripts/`, and the Dockerfile didn't copy that directory, so
+  the build has failed since 0.2.0. CI now builds the image on every change.
+- **`--watch` picks up parameter type, enum, and description changes**, and
+  tool annotation changes. They didn't count as a change, so the running
+  server kept the stale schema.
+- **OAuth tokens whose `expires_in` is a numeric string** (as some providers
+  send it) are now refreshed ahead of expiry, not only after a 401.
+- **An API-key cookie no longer replaces cookie parameters.** It's sent with
+  them, and wins over a parameter of the same name.
+- **Enrichment errors say what to fix.** Every failure reported the same
+  structured-outputs hint; an invalid key, an unknown model, and a network
+  failure now each get their own.
+- **Postgres databases created before per-server MCP tokens** gain the
+  `mcp_token` column on connect, as SQLite ones already did.
+- **The `/logs` endpoint** rejects non-integer `limit` and `status` values and
+  caps `limit` at 1,000.
+- **`wrangl catalog` tool counts are current.** They're fixed numbers in the
+  manifest and had drifted as upstream specs grew.
+
+### Security
+
+- **Updated `@modelcontextprotocol/node` to 2.1.2** for
+  [GHSA-f897-62hf-6gxq](https://github.com/advisories/GHSA-f897-62hf-6gxq)
+  (high): its HTTP transports didn't limit request body size or JSON-RPC
+  batch length. The hosted MCP endpoints use it.
+- **Bearer tokens are compared in constant time**, for both the admin token
+  and the per-server MCP tokens.
+- **Confirmation signing no longer reuses the vault's key.** When
+  `WRANGL_SECRET_KEY` is a raw hex or base64 key, the vault used it directly
+  and so did the confirmation signer. The signer now derives its own key with
+  HKDF. Stored credentials are unaffected; confirmations in flight during the
+  upgrade (5-minute lifetime) must be re-confirmed.
+
 ## [0.4.1] - 2026-10-27
 
 ### Fixed
@@ -154,7 +261,8 @@ First public release. Wrangl turns any REST API into an agent-ready MCP server.
 - **Deployment.** Docker image and Compose files, Caddy TLS, admin token,
   per-server tokens and rate limits, and a Postgres backend for multiple replicas.
 
-[Unreleased]: https://github.com/asgerami/wrangl/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/asgerami/wrangl/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/asgerami/wrangl/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/asgerami/wrangl/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/asgerami/wrangl/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/asgerami/wrangl/compare/v0.2.0...v0.3.0
