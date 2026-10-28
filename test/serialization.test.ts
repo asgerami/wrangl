@@ -158,3 +158,33 @@ test("deepObject explodes object properties into bracketed keys", async () => {
     await srv.close();
   }
 });
+
+test("an API-key cookie is sent alongside cookie parameters, not instead of them", async () => {
+  let cookie: string | undefined;
+  const server = createServer((req, res) => {
+    cookie = req.headers.cookie;
+    res.end("{}");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  try {
+    const cookieParam = (name: string): ToolParam => ({
+      name, sourceName: name, location: "cookie", required: false,
+      schema: { type: "string" }, style: "form", explode: true,
+    });
+    const tool: ToolDef = {
+      name: "t", description: "", method: "GET", pathTemplate: "/x",
+      params: [cookieParam("theme"), cookieParam("session")],
+      body: undefined, security: ["key"],
+    };
+    await executeTool(tool, { theme: "dark", session: "from-agent" }, {
+      baseUrl: `http://127.0.0.1:${port}`,
+      schemes: { key: { type: "apiKey", name: "key", in: "cookie", paramName: "session" } },
+      creds: { key: "real-session" },
+    });
+    // The credential wins over a same-named parameter; other cookies survive.
+    assert.equal(cookie, "session=real-session; theme=dark");
+  } finally {
+    server.close();
+  }
+});

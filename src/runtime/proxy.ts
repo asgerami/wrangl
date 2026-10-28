@@ -72,6 +72,15 @@ function truncate(text: string): string {
     : text;
 }
 
+/**
+ * The tool call's arguments can't form a valid request (a missing required
+ * parameter, a path value that would change the endpoint). The caller's
+ * mistake, never retried, as opposed to an upstream failure.
+ */
+export class ToolArgumentError extends Error {
+  override name = "ToolArgumentError";
+}
+
 export interface ProxyResult {
   statusCode: number;
   ok: boolean;
@@ -217,7 +226,7 @@ function buildRequest(
     const value = args[param.name];
     if (value === undefined || value === null) {
       if (param.required) {
-        throw new Error(`Missing required parameter "${param.name}".`);
+        throw new ToolArgumentError(`Missing required parameter "${param.name}".`);
       }
       continue;
     }
@@ -250,7 +259,7 @@ function buildRequest(
   // credentials still injected. encodeURIComponent leaves dots alone, so refuse
   // any such segment outright.
   if (path.split("/").some((segment) => segment === "." || segment === "..")) {
-    throw new Error(
+    throw new ToolArgumentError(
       `Invalid path "${path}": path parameters can't be "." or "..", which would ` +
         `redirect the call to a different endpoint.`,
     );
@@ -260,7 +269,7 @@ function buildRequest(
   if (tool.body) {
     const bodyValue = args.body;
     if (bodyValue === undefined && tool.body.required) {
-      throw new Error(`Missing required request body argument "body".`);
+      throw new ToolArgumentError(`Missing required request body argument "body".`);
     }
     if (bodyValue !== undefined) {
       body = JSON.stringify(bodyValue);
@@ -272,7 +281,13 @@ function buildRequest(
 
   // Inject credentials last so they take precedence and are never overridden.
   const auth = buildAuthInjection(tool.security, ctx.schemes, ctx.creds);
+  const paramCookies = headers["Cookie"];
   Object.assign(headers, auth.headers);
+  // An API key sent as a cookie joins the cookie parameters instead of
+  // replacing them; it goes first, and a same-named parameter is dropped.
+  if (auth.headers["Cookie"] && paramCookies) {
+    headers["Cookie"] = mergeCookies(auth.headers["Cookie"], paramCookies);
+  }
   for (const [k, v] of Object.entries(auth.query)) query.set(k, v);
 
   const url = new URL(joinUrl(ctx.baseUrl, path));
@@ -324,6 +339,11 @@ function serializeQuery(
   }
 
   query.append(key, stringify(value));
+}
+
+function mergeCookies(credential: string, params: string): string {
+  const name = credential.slice(0, credential.indexOf("=") + 1);
+  return [credential, ...params.split("; ").filter((pair) => !pair.startsWith(name))].join("; ");
 }
 
 function appendCookie(existing: string | undefined, key: string, value: string): string {

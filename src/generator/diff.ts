@@ -55,13 +55,20 @@ function describeChanges(a: ToolDef, b: ToolDef): string[] {
   if (bodySignature(a) !== bodySignature(b)) changes.push("body");
   if (sorted(a.security) !== sorted(b.security)) changes.push("security");
   if (stable(a.outputSchema) !== stable(b.outputSchema)) changes.push("output");
+  if (stable(a.annotations) !== stable(b.annotations)) changes.push("annotations");
   return changes;
 }
 
-/** Stable signature of a tool's parameters (the parts the runtime depends on). */
+/**
+ * Stable signature of a tool's parameters: everything the runtime serializes
+ * by, plus the schema and description the agent sees — a param whose type or
+ * enum changes must re-register, or the agent keeps validating against the old.
+ */
 function paramSignature(tool: ToolDef): string {
   return tool.params
-    .map((p) => `${p.sourceName}:${p.location}:${p.required}:${p.style}:${p.explode}`)
+    .map((p) =>
+      stable([p.sourceName, p.location, p.required, p.style, p.explode, p.schema, p.description]),
+    )
     .sort()
     .join("|");
 }

@@ -1,4 +1,4 @@
-import { createHash, randomBytes, scryptSync } from "node:crypto";
+import { createHash, hkdfSync, randomBytes, scryptSync } from "node:crypto";
 import {
   createRequestStateCodec,
   type RequestStateCodec,
@@ -26,16 +26,24 @@ let cached: { codec: RequestStateCodec<ConfirmationState>; key: string } | undef
 
 /**
  * Derive the 32-byte HMAC key from WRANGL_SECRET_KEY, domain-separated from
- * the credential vault's key (different scrypt salt) so the two never
- * collide even when operators reuse one secret for both.
+ * the credential vault's key so the two never share key bytes, even though
+ * both come from the one secret: a raw hex/base64 key (which the vault uses
+ * as-is) is expanded with HKDF, and a passphrase gets its own scrypt salt.
  */
-function deriveKey(secret: string): Buffer {
+export function deriveConfirmationKey(secret: string): Buffer {
+  const raw = rawKey(secret);
+  if (raw) return Buffer.from(hkdfSync("sha256", raw, Buffer.alloc(0), "wrangl.confirm.v1", 32));
+  return scryptSync(secret, "wrangl.confirm.v1", 32);
+}
+
+/** A 32-byte key given directly as 64 hex chars or base64, as the vault accepts it. */
+function rawKey(secret: string): Buffer | undefined {
   if (/^[0-9a-fA-F]{64}$/.test(secret)) return Buffer.from(secret, "hex");
   if (/^[A-Za-z0-9+/]{43}=?$/.test(secret)) {
     const buf = Buffer.from(secret, "base64");
     if (buf.length === 32) return buf;
   }
-  return scryptSync(secret, "wrangl.confirm.v1", 32);
+  return undefined;
 }
 
 /**
@@ -62,7 +70,7 @@ export function confirmationCodec(
   }
 
   const codec = createRequestStateCodec<ConfirmationState>({
-    key: secret ? deriveKey(secret) : randomBytes(32),
+    key: secret ? deriveConfirmationKey(secret) : randomBytes(32),
     ttlSeconds: CONFIRM_TTL_SECONDS,
     // Domain-separates confirmation state from any other MRTR flow a future
     // feature might add on the same server.

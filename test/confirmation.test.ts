@@ -245,3 +245,12 @@ test("tools/list carries the modern wire shape: resultType, cache fields, and an
     await handler.close();
   }
 });
+
+test("a raw WRANGL_SECRET_KEY is not reused as-is for signing confirmations", async () => {
+  const { deriveConfirmationKey } = await import("../src/runtime/confirmation.js");
+  const hex = "ab".repeat(32); // a raw key, which the vault uses directly
+  const key = deriveConfirmationKey(hex);
+  assert.equal(key.length, 32);
+  assert.notDeepEqual(key, Buffer.from(hex, "hex"), "must not share the vault's key bytes");
+  assert.deepEqual(deriveConfirmationKey(hex), key, "deterministic, so replicas agree");
+});
