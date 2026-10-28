@@ -4,6 +4,8 @@
 FROM node:22-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
+# `npm ci` runs the package's `prepare` script, which lives in scripts/.
+COPY scripts ./scripts
 RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src

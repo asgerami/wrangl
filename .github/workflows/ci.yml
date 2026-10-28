@@ -5,6 +5,9 @@ on:
     branches: [master]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -54,3 +57,13 @@ jobs:
         env:
           WRANGL_SKIP_NETWORK: "1"
           WRANGL_PG_URL: postgres://wrangl:wrangl@localhost:5432/wrangl
+
+  # The Docker image is a documented way to run Wrangl, so build it on every
+  # change; a missing file in the build context once broke it unnoticed.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t wrangl:ci .
+      - name: Smoke-test the image
+        run: docker run --rm --entrypoint node wrangl:ci dist/cli.js --version
