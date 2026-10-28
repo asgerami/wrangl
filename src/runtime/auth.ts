@@ -69,7 +69,7 @@ export function loadCredentialsFromEnv(
 ): CredentialStore {
   const creds: CredentialStore = {};
   for (const [name, scheme] of Object.entries(schemes)) {
-    const specific = env[`WRANGL_AUTH_${envKey(name)}`];
+    const specific = env[credentialEnvVar(name)];
     if (specific) {
       creds[name] = specific;
       continue;
@@ -105,6 +105,7 @@ export function parseAuthFlags(flags: string[]): CredentialStore {
   return creds;
 }
 
-function envKey(name: string): string {
-  return name.replace(/[^a-zA-Z0-9]+/g, "_").toUpperCase();
+/** The environment variable that supplies a credential for one security scheme. */
+export function credentialEnvVar(schemeName: string): string {
+  return `WRANGL_AUTH_${schemeName.replace(/[^a-zA-Z0-9]+/g, "_").toUpperCase()}`;
 }

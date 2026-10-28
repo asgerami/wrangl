@@ -45,7 +45,8 @@ npx @asgerami/wrangl add stripe   # 600+ tools
 npx @asgerami/wrangl add github --include "repos*"
 ```
 
-API keys are read from environment variables; see
+For an API that needs a key, pass it with `--env`, for example
+`--env WRANGL_BEARER_TOKEN=...`; see
 [Authentication](docs/GUIDE.md#authentication).
 
 ## Dashboard

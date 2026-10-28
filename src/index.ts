@@ -92,12 +92,19 @@ export {
   selfCommand,
   type ClientName,
   type McpServerEntry,
+  type SpecSource,
   type InstallResult,
   type BuildServerEntryOptions,
 } from "./clients.js";
-export { executeTool, type ProxyContext, type RequestLog } from "./runtime/proxy.js";
+export {
+  executeTool,
+  ToolArgumentError,
+  type ProxyContext,
+  type RequestLog,
+} from "./runtime/proxy.js";
 export {
   loadCredentialsFromEnv,
+  credentialEnvVar,
   parseAuthFlags,
   buildAuthInjection,
   type CredentialStore,

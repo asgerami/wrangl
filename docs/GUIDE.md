@@ -85,6 +85,7 @@ wrangl install <api> [options]     Discover, generate, and wire into your agent 
   -b, --base-url <url>    Upstream API base URL override
   --include <pattern>     Only keep matching tools (glob; name/path/tag; repeatable)
   --exclude <pattern>     Drop matching tools (glob; repeatable)
+  --env <KEY=value>       Set an env var for the server, e.g. its API key (repeatable)
   --print                 Print the config block instead of writing it
 
 wrangl add <id>                    Install a ready-made server from the catalog
@@ -93,6 +94,7 @@ wrangl catalog                     List the ready-made servers
 wrangl generate --spec <url|file> [options]
   -s, --spec <source>     OpenAPI 3.x spec or Postman collection: a URL or file
   -d, --discover <url>    Auto-discover the spec by probing a base URL
+  --catalog <id>          Use a ready-made spec from the catalog
   -b, --base-url <url>    Upstream base URL (overrides the spec's servers)
   -t, --transport <type>  stdio | http (default stdio)
   -p, --port <number>     Port for the http transport (default 3000)
@@ -105,7 +107,7 @@ wrangl generate --spec <url|file> [options]
   -l, --log-db [path]     Persist tool-call logs to SQLite (default .wrangl/logs.db)
   -w, --watch <seconds>   Re-ingest the spec every N seconds and hot-reload tools
 
-wrangl inspect --spec <url|file> [--json] [--enrich] [--discover <url>] [--include] [--exclude]
+wrangl inspect --spec <url|file> [--json] [--enrich] [--discover <url>] [--catalog <id>] [--include] [--exclude]
   Parse a spec and print the generated tools without serving.
 
 wrangl serve [options]             Control-plane API + dashboard hosting many servers
@@ -179,7 +181,7 @@ Or add it by hand to your client's config (`claude_desktop_config.json`):
   "mcpServers": {
     "petstore": {
       "command": "npx",
-      "args": ["@asgerami/wrangl", "generate", "--spec", "https://petstore3.swagger.io/api/v3/openapi.json"]
+      "args": ["-y", "@asgerami/wrangl", "generate", "--spec", "https://petstore3.swagger.io/api/v3/openapi.json"]
     }
   }
 }
@@ -209,6 +211,18 @@ wrangl generate --spec api.yaml --auth bearerAuth=my-token
 ```
 
 For Basic auth, pass the value as `user:password`.
+
+For a server installed into an agent client, put the key in the client's
+config with `--env`. Clients like Claude Desktop usually start servers
+without your shell's environment, so an `export` in your terminal won't reach
+them:
+
+```bash
+wrangl add stripe --env WRANGL_BEARER_TOKEN=sk_test_...
+```
+
+The value is stored in the client's config file, the same way other MCP
+servers take their keys.
 
 ## Reliability
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 
@@ -68,6 +68,7 @@ import {
 } from "./clients.js";
 import type { RequestLog } from "./runtime/proxy.js";
 import {
+  credentialEnvVar,
   loadCredentialsFromEnv,
   parseAuthFlags,
   type CredentialStore,
@@ -81,7 +82,7 @@ const program = new Command();
 
 program
   .name("wrangl")
-  .description("Turn any REST API into an agent-ready MCP server in minutes.")
+  .description("Turn any REST API into an agent-ready MCP server in one command.")
   .version(pkg.version);
 
 program
@@ -95,6 +96,7 @@ program
     "-d, --discover <baseUrl>",
     "Auto-discover the spec by probing well-known paths under a base URL",
   )
+  .option("--catalog <id>", "Use a ready-made spec from the catalog (see `wrangl catalog`)")
   .option(
     "-b, --base-url <url>",
     "Upstream API base URL (overrides the spec's `servers`)",
@@ -212,6 +214,7 @@ program
   .description("Parse a spec and print the generated tools without serving.")
   .option("-s, --spec <source>", "OpenAPI 3.x spec or Postman collection: URL or file")
   .option("-d, --discover <baseUrl>", "Auto-discover the spec under a base URL")
+  .option("--catalog <id>", "Use a ready-made spec from the catalog (see `wrangl catalog`)")
   .option("-b, --base-url <url>", "Upstream API base URL")
   .option("--json", "Output the full tool definitions as JSON")
   .option(
@@ -315,6 +318,12 @@ const installOptions = (cmd: Command): Command =>
     .option(
       "--exclude <pattern>",
       "Drop tools matching name/path/tag (glob, repeatable)",
+      collect,
+      [],
+    )
+    .option(
+      "--env <KEY=value>",
+      "Set an environment variable for the server, e.g. its API key (repeatable)",
       collect,
       [],
     )
@@ -503,6 +512,19 @@ function collect(value: string, previous: string[]): string[] {
   return previous.concat([value]);
 }
 
+/** Parse repeatable `--env KEY=value` flags; undefined when none were given. */
+function parseEnvFlags(flags: string[] = []): Record<string, string> | undefined {
+  if (!flags.length) return undefined;
+  const env: Record<string, string> = {};
+  for (const flag of flags) {
+    const eq = flag.indexOf("=");
+    // Don't echo the flag: a malformed one may be a bare secret.
+    if (eq <= 0) throw new Error("Invalid --env value. Expected KEY=value.");
+    env[flag.slice(0, eq)] = flag.slice(eq + 1);
+  }
+  return env;
+}
+
 /** URL-safe lowercase name for a config key. */
 function slug(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "api";
@@ -519,6 +541,7 @@ async function runInstall(
     print?: boolean;
     include?: string[];
     exclude?: string[];
+    env?: string[];
   },
 ): Promise<void> {
   const clientName = options.client ?? "claude";
@@ -528,17 +551,27 @@ async function runInstall(
     );
   }
   const client: ClientName = clientName;
+  const env = parseEnvFlags(options.env);
 
-  const spec = await resolveApiTarget(api);
+  const { spec, catalog } = await resolveApiTarget(api);
   console.error(`→ reading ${spec}…`);
   const generated = await ingest(spec, { baseUrl: options.baseUrl });
   applyToolFilter(generated, options);
   const name = slug(options.name ?? generated.name);
-  const entry = buildServerEntry(spec, {
+  // The client launches the server from its own working directory, so a
+  // relative spec path wouldn't resolve there; catalog entries are recorded by
+  // id so a bundled spec never pins a path inside this install.
+  const source = catalog
+    ? { catalog }
+    : /^https?:\/\//i.test(spec)
+      ? spec
+      : resolve(spec);
+  const entry = buildServerEntry(source, {
     baseUrl: options.baseUrl,
     include: options.include,
     exclude: options.exclude,
   });
+  if (env) entry.env = env;
   console.error(`→ generated ${generated.tools.length} tools from ${generated.name}`);
 
   const configKey = clientConfigKey(client);
@@ -554,18 +587,24 @@ async function runInstall(
   const target = options.config ? "your client" : clientLabel(client);
 
   // Nudge the user if the API needs a credential before it will actually work.
+  // A shell `export` doesn't help: agent clients usually start servers without
+  // the user's shell environment, so the key has to live in the client config.
   const schemes = Object.keys(generated.securitySchemes);
-  const authHint = schemes.length
-    ? `\n\nThis API needs auth (${schemes.join(", ")}). Set it with an env var, e.g.` +
-      `\n  export WRANGL_BEARER_TOKEN=...    # or WRANGL_API_KEY / WRANGL_AUTH_<SCHEME>`
-    : "";
+  const authHint =
+    schemes.length && !env
+      ? `\n\nThis API needs auth (${schemes.join(", ")}). Agent clients usually don't` +
+        ` see your shell's environment, so pass the key when installing, e.g.` +
+        `\n  wrangl install ${api} --env ${credentialEnvVar(schemes[0])}=...` +
+        `\nThe key is saved in the client's config file.`
+      : "";
 
   console.error(
     `\n✓ ${result.replaced ? "Updated" : "Added"} "${name}" in ${target}` +
       `\n  ${result.path}` +
       (result.backup ? `\n  (backup: ${result.backup})` : "") +
       authHint +
-      `\n\nRestart ${target} — ${generated.tools.length} tools from ${generated.name} are ready.`,
+      `\n\nRestart ${target} — ${generated.tools.length} ` +
+      `${generated.tools.length === 1 ? "tool" : "tools"} from ${generated.name} ready.`,
   );
 }
 
@@ -573,12 +612,12 @@ async function runInstall(
  * Resolve what the user pointed `install`/`add` at: a catalog id, a bare API
  * base URL (auto-discover its spec), or a spec URL/file used as-is.
  */
-async function resolveApiTarget(api: string): Promise<string> {
+async function resolveApiTarget(api: string): Promise<{ spec: string; catalog?: string }> {
   // A catalog id — no URL needed.
   const fromCatalog = findCatalogEntry(api);
   if (fromCatalog) {
     console.error(`→ ${fromCatalog.name} (catalog)`);
-    return fromCatalog.spec;
+    return { spec: fromCatalog.spec, catalog: fromCatalog.id ?? fromCatalog.name };
   }
 
   // A bare base URL (no spec file extension) — go find the spec.
@@ -587,13 +626,13 @@ async function resolveApiTarget(api: string): Promise<string> {
     const found = await discoverSpec(api);
     if (found) {
       console.error(`→ found spec at ${found.specUrl}`);
-      return found.specUrl;
+      return { spec: found.specUrl };
     }
     throw new Error(
       `No OpenAPI spec found under ${api}. Pass the spec URL directly.`,
     );
   }
-  return api;
+  return { spec: api };
 }
 
 /** Apply --include / --exclude to a generated server (mutates tools in place). */
@@ -618,11 +657,24 @@ function applyToolFilter(
 }
 
 /**
- * Resolve the spec source from --spec, or auto-discover it from --discover.
- * Exactly one must be provided.
+ * Resolve the spec source from --spec, --catalog, or auto-discover it from
+ * --discover. Exactly one must be provided.
  */
-async function resolveSpec(options: { spec?: string; discover?: string }): Promise<string> {
+async function resolveSpec(options: {
+  spec?: string;
+  catalog?: string;
+  discover?: string;
+}): Promise<string> {
   if (options.spec) return options.spec;
+  if (options.catalog) {
+    const entry = findCatalogEntry(options.catalog);
+    if (!entry) {
+      throw new Error(
+        `Unknown catalog id "${options.catalog}". Run \`wrangl catalog\` to see them.`,
+      );
+    }
+    return entry.spec;
+  }
   if (options.discover) {
     console.error(`→ discovering spec under ${options.discover}…`);
     const found = await discoverSpec(options.discover);
@@ -635,7 +687,7 @@ async function resolveSpec(options: { spec?: string; discover?: string }): Promi
     console.error(`→ found spec at ${found.specUrl}`);
     return found.specUrl;
   }
-  throw new Error("Provide --spec <url|file> or --discover <baseUrl>.");
+  throw new Error("Provide --spec <url|file>, --catalog <id>, or --discover <baseUrl>.");
 }
 
 /** Resolve the log DB path from a flag value (`true` → default path). */
