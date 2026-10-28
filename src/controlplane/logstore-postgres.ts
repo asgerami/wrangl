@@ -24,6 +24,7 @@ const SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS idx_logs_server ON request_logs(server);
   CREATE INDEX IF NOT EXISTS idx_logs_tool   ON request_logs(tool);
+  CREATE INDEX IF NOT EXISTS idx_logs_time   ON request_logs(timestamp);
 `;
 
 interface Row extends Omit<LogRow, "id" | "timestamp"> {
@@ -80,6 +81,11 @@ export class PostgresLogStore implements LogStore {
       params,
     );
     return res.rows.map((r) => ({ ...r, id: Number(r.id), timestamp: Number(r.timestamp) }));
+  }
+
+  async prune(before: number): Promise<number> {
+    const res = await this.pool.query(`DELETE FROM request_logs WHERE timestamp < $1`, [before]);
+    return res.rowCount ?? 0;
   }
 
   async close(): Promise<void> {

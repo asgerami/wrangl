@@ -64,6 +64,7 @@ test("PostgresLogStore records and queries", { skip }, async () => {
     assert.equal(rows.length, 2);
     assert.deepEqual(rows.map((r) => r.tool), ["b", "a"]); // newest-first
     assert.equal((await store.query({ server, status: 401 })).length, 1);
+    assert.equal(await store.prune(Date.now() - 60_000), 0, "recent rows are kept");
   } finally {
     await store.close();
   }

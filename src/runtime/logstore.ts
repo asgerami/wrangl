@@ -13,6 +13,8 @@ import type { RequestLog } from "./proxy.js";
 export interface LogStore {
   record(server: string, entry: RequestLog): Promise<void>;
   query(q?: LogQuery): Promise<LogRow[]>;
+  /** Delete rows logged before `before` (epoch ms); returns how many went. */
+  prune(before: number): Promise<number>;
   close(): Promise<void>;
 }
 
@@ -71,6 +73,7 @@ const SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS idx_logs_server ON request_logs(server);
   CREATE INDEX IF NOT EXISTS idx_logs_tool   ON request_logs(tool);
+  CREATE INDEX IF NOT EXISTS idx_logs_time   ON request_logs(timestamp);
 `;
 
 export class SqliteLogStore implements LogStore {
@@ -131,7 +134,34 @@ export class SqliteLogStore implements LogStore {
       .all(...params, limit) as unknown as LogRow[];
   }
 
+  async prune(before: number): Promise<number> {
+    const result = this.db.prepare(`DELETE FROM request_logs WHERE timestamp < ?`).run(before);
+    return Number(result.changes);
+  }
+
   async close(): Promise<void> {
     this.db.close();
   }
+}
+
+/**
+ * Keep usage logs for `days` (0 = forever): prune now, then hourly. Logs hold
+ * request and response bodies, so they shouldn't pile up indefinitely.
+ * Returns a function that stops the hourly pruning.
+ */
+export function retainLogs(
+  store: LogStore,
+  days: number,
+  onPruned?: (rows: number) => void,
+): () => void {
+  if (!(days > 0)) return () => {};
+  const prune = () =>
+    store
+      .prune(Date.now() - days * 86_400_000)
+      .then((rows) => rows && onPruned?.(rows))
+      .catch(() => {}); // never take the server down over housekeeping
+  void prune();
+  const timer = setInterval(prune, 3_600_000);
+  timer.unref?.();
+  return () => clearInterval(timer);
 }

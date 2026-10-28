@@ -105,6 +105,7 @@ wrangl generate --spec <url|file> [options]
   -m, --model <id>        Claude model for enrichment (default claude-opus-4-8)
   --effort <level>        Enrichment reasoning effort: low | medium | high (default low)
   -l, --log-db [path]     Persist tool-call logs to SQLite (default .wrangl/logs.db)
+  --log-retention <days>  Days to keep usage logs, 0 = forever (default 30)
   -w, --watch <seconds>   Re-ingest the spec every N seconds and hot-reload tools
 
 wrangl inspect --spec <url|file> [--json] [--enrich] [--discover <url>] [--catalog <id>] [--include] [--exclude]
@@ -114,6 +115,7 @@ wrangl serve [options]             Control-plane API + dashboard hosting many se
   -p, --port <number>       Port to listen on (default 4000)
   -H, --host <host>         Host to bind (default 127.0.0.1; use 0.0.0.0 in a container)
   -l, --log-db [path]       Usage-log SQLite file, or a postgres:// URL (default .wrangl/logs.db)
+  --log-retention <days>    Days to keep usage logs, 0 = forever (default 30)
   -S, --seed [manifest]     Seed prebuilt server anchors (default bundled)
   -u, --public-url <url>    Public base URL for OAuth callbacks (env WRANGL_PUBLIC_URL)
   -a, --admin-token <token> Require this Bearer token on the management API (env WRANGL_ADMIN_TOKEN)
@@ -316,6 +318,10 @@ wrangl logs --tail
 
 Backed by Node's built-in `node:sqlite`, so there is no external database to run.
 This is the same log store the dashboard reads from.
+
+Logs hold request arguments and response bodies, so they're kept for 30 days
+and pruned at startup and hourly. Change that with `--log-retention <days>` on
+`generate` and `serve` (or `WRANGL_LOG_RETENTION_DAYS`); `0` keeps everything.
 
 ## Live spec sync
 

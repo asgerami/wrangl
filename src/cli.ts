@@ -44,7 +44,7 @@ import { createMcpServer, createReloadableServer } from "./runtime/server.js";
 import { serveStdio, serveHttp } from "./runtime/transport.js";
 import { watchSpec } from "./runtime/watch.js";
 import { diffTools, formatDiff, hasChanges } from "./generator/diff.js";
-import { openLogStore, type LogStore, type LogRow } from "./runtime/logstore.js";
+import { openLogStore, retainLogs, type LogStore, type LogRow } from "./runtime/logstore.js";
 import { ServerRegistry } from "./controlplane/registry.js";
 import { openServerStore } from "./controlplane/store.js";
 import { Vault } from "./controlplane/vault.js";
@@ -77,6 +77,10 @@ import type { GeneratedServer } from "./types.js";
 
 /** Default location for the persistent usage-log database. */
 const DEFAULT_LOG_DB = join(process.cwd(), ".wrangl", "logs.db");
+
+const DEFAULT_LOG_RETENTION_DAYS = 30;
+const LOG_RETENTION_HELP =
+  `Days to keep usage logs, 0 = forever (env WRANGL_LOG_RETENTION_DAYS; default ${DEFAULT_LOG_RETENTION_DAYS})`;
 
 const program = new Command();
 
@@ -135,6 +139,7 @@ program
     "-l, --log-db [path]",
     `Persist usage logs to a SQLite file (default: ${DEFAULT_LOG_DB})`,
   )
+  .option("--log-retention <days>", LOG_RETENTION_HELP)
   .option(
     "-w, --watch <seconds>",
     "Re-ingest the spec every N seconds and hot-reload changed tools",
@@ -153,7 +158,10 @@ program
       warnMissingCreds(active, creds);
 
       const store = await maybeOpenLogStore(options.logDb);
-      if (store) console.error(`→ logging tool calls to ${logDbPath(options.logDb)}`);
+      if (store) {
+        console.error(`→ logging tool calls to ${logDbPath(options.logDb)}`);
+        startLogRetention(store, options.logRetention);
+      }
 
       const onLog = (e: RequestLog) => {
         console.error(
@@ -386,6 +394,7 @@ program
     "-l, --log-db [path]",
     `Usage-log SQLite file (default: ${DEFAULT_LOG_DB})`,
   )
+  .option("--log-retention <days>", LOG_RETENTION_HELP)
   .option(
     "-S, --seed [manifest]",
     "Seed prebuilt server anchors from a manifest (default: bundled)",
@@ -413,11 +422,9 @@ program
         DEFAULT_LOG_DB;
       const vault = Vault.fromEnv();
       const serverStore = await openServerStore(dbLocation);
-      const registry = new ServerRegistry({
-        logStore: await openLogStore(dbLocation),
-        serverStore,
-        vault,
-      });
+      const logStore = await openLogStore(dbLocation);
+      startLogRetention(logStore, options.logRetention);
+      const registry = new ServerRegistry({ logStore, serverStore, vault });
       console.error(
         vault
           ? "→ credential encryption enabled (WRANGL_SECRET_KEY)"
@@ -698,6 +705,19 @@ async function resolveSpec(options: {
 /** Resolve the log DB path from a flag value (`true` → default path). */
 function logDbPath(flag: unknown): string {
   return typeof flag === "string" ? flag : DEFAULT_LOG_DB;
+}
+
+/**
+ * Prune usage logs older than the retention period, now and hourly. Days come
+ * from --log-retention, then WRANGL_LOG_RETENTION_DAYS, then the default.
+ */
+function startLogRetention(store: LogStore, flag: string | undefined): void {
+  const days = Number(flag ?? process.env.WRANGL_LOG_RETENTION_DAYS ?? DEFAULT_LOG_RETENTION_DAYS);
+  if (!Number.isFinite(days) || days < 0) {
+    throw new Error("--log-retention must be a number of days (0 keeps logs forever).");
+  }
+  console.error(days > 0 ? `→ keeping usage logs for ${days} days` : "→ keeping usage logs forever");
+  retainLogs(store, days, (rows) => console.error(`→ pruned ${rows} usage-log rows older than ${days} days`));
 }
 
 /** Open a log store when --log-db was passed; otherwise return undefined. */

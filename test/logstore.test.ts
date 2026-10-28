@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SqliteLogStore } from "../src/runtime/logstore.js";
+import { SqliteLogStore, retainLogs } from "../src/runtime/logstore.js";
 import type { RequestLog } from "../src/runtime/proxy.js";
 
 function entry(over: Partial<RequestLog> = {}): RequestLog {
@@ -60,5 +60,32 @@ test("stores error rows with null status", async () => {
   const row = (await store.query())[0];
   assert.equal(row.status_code, null);
   assert.equal(row.error, "boom");
+  await store.close();
+});
+
+test("prune deletes only rows older than the cutoff", async () => {
+  const store = SqliteLogStore.open(":memory:");
+  const entry: RequestLog = { tool: "t", method: "GET", url: "u", statusCode: 200, latencyMs: 1 };
+  await store.record("s", entry);
+  await store.record("s", entry);
+  assert.equal(await store.prune(Date.now() - 60_000), 0, "recent rows are kept");
+  assert.equal(await store.prune(Date.now() + 1), 2);
+  assert.equal((await store.query()).length, 0);
+  await store.close();
+});
+
+test("retainLogs prunes old rows at once and does nothing for 0 days", async () => {
+  const store = SqliteLogStore.open(":memory:");
+  let cutoff: number | undefined;
+  const spy = { ...store, prune: async (before: number) => ((cutoff = before), 0) } as SqliteLogStore;
+
+  retainLogs(spy, 0)();
+  assert.equal(cutoff, undefined, "0 days keeps logs forever");
+
+  const stop = retainLogs(spy, 30);
+  stop();
+  await new Promise((r) => setImmediate(r));
+  const expected = Date.now() - 30 * 86_400_000;
+  assert.ok(cutoff !== undefined && Math.abs(cutoff - expected) < 5_000, "cutoff is 30 days back");
   await store.close();
 });
