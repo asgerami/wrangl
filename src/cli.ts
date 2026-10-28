@@ -462,6 +462,11 @@ program
         oauth,
         adminToken,
         rateLimitPerMin: options.rateLimit,
+        // Names this server is reached by, for the no-admin-token Host check
+        // (a wildcard bind address isn't a name anyone connects with).
+        allowedHosts: [new URL(publicBase).hostname, options.host].filter(
+          (h) => !["0.0.0.0", "::", "[::]"].includes(h),
+        ),
       });
 
       // Graceful shutdown so in-flight requests finish and the DB closes.

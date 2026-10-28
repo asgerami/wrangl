@@ -425,6 +425,11 @@ exposing it beyond localhost.
   shell, `/health`, the OAuth callback, and the hosted MCP endpoints stay public
   (the MCP endpoints have their own per-server token). `serve` warns loudly if
   you bind a non-local host without a token.
+- **Host check without a token.** With no admin token, the API only answers
+  requests addressed to `localhost`, `127.0.0.1`, `[::1]`, the `--host` you
+  bound, or the `--public-url` host. This blocks DNS rebinding, where a web
+  page points its own domain at your machine to call the API from your
+  browser. Any other `Host` gets a 403; set an admin token to serve it.
 - **Per-server MCP token.** Each server gets a random Bearer token at creation
   (returned by `POST /servers` and shown in the dashboard). Agents must send it
   as `Authorization: Bearer <token>` to `/servers/:id/mcp`, so knowing the URL is
@@ -490,8 +495,10 @@ real origin.
 By default Wrangl persists to a single SQLite file (one instance). To run
 multiple replicas, point them all at one Postgres via `DATABASE_URL` (or
 `--log-db postgres://...`). Server records, credentials, OAuth tokens, and usage
-logs are then shared, and each replica reads a server another created through the
-store on a cache miss.
+logs are then shared. Each replica reads a server another created through the
+store on first use, and re-checks its cached copy once it's 5 seconds old, so a
+server deleted, regenerated, or given new credentials on one replica changes on
+the others within seconds.
 
 ```bash
 export WRANGL_SECRET_KEY=... WRANGL_ADMIN_TOKEN=...
@@ -503,11 +510,10 @@ and `DATABASE_URL` select by scheme (`postgres://` versus a file path).
 
 Caveats when running more than one replica: Streamable-HTTP MCP sessions are
 per-instance, so the load balancer needs session affinity (sticky by
-`mcp-session-id` or client IP); the OAuth authorization `state` is per-instance,
-so route `/oauth/callback` with affinity too; and the rate limit is per-instance
-(effective limit is roughly N times the configured value). A credential change
-made on one replica reaches the others when they next rebuild that server's
-entry.
+`mcp-session-id` or client IP), and the rate limit is per-instance (effective
+limit is roughly N times the configured value). OAuth sign-ins need no
+affinity: one in progress is kept in the shared store, so the provider's
+redirect can land on any replica.
 
 ## Library usage
 

@@ -103,9 +103,10 @@ test("OAuth flow: configure → authorize → callback injects a token; refresh 
     assert.equal(await manager.refresh(entry.id, "userAuth"), true);
     assert.equal(entry.creds.userAuth, "at-2");
 
-    // A fresh registry (restart) re-injects the stored token via restoreAll.
+    // A fresh registry (restart) rehydrates the server and re-injects the
+    // stored token via restoreAll.
     const registry2 = new ServerRegistry({ serverStore: store, vault });
-    await registry2.create({ spec: await oauthSpec(token.url), name: "OA" });
+    await registry2.load();
     const manager2 = new OAuthManager({
       registry: registry2, store, vault, callbackUrl: "http://127.0.0.1:4000/oauth/callback",
     });
@@ -113,6 +114,41 @@ test("OAuth flow: configure → authorize → callback injects a token; refresh 
     assert.ok(registry2.get(entry.id)!.creds.userAuth?.startsWith("at-"));
   } finally {
     await token.close();
+  }
+});
+
+test("a sign-in started on one replica completes on another, once, and expires", async () => {
+  const token = await tokenServer();
+  const dbPath = join(await mkdtemp(join(tmpdir(), "wrangl-oauth-")), "cp.db");
+  const vault = new Vault(randomBytes(32));
+  const replica = () => {
+    const store = SqliteServerStore.open(dbPath);
+    const registry = new ServerRegistry({ serverStore: store, vault, staleAfterMs: 0 });
+    const manager = new OAuthManager({ registry, store, vault, callbackUrl: "http://127.0.0.1/cb" });
+    return { store, registry, manager };
+  };
+  const a = replica();
+  const b = replica();
+  try {
+    const { id } = await a.registry.create({ spec: await oauthSpec(token.url), name: "OA" });
+    await a.manager.configure(id, "userAuth", { clientId: "cid" });
+    const state = new URL(await a.manager.startAuthorization(id, "userAuth")).searchParams.get("state")!;
+
+    // The provider redirects to whichever replica the load balancer picks.
+    await b.registry.resolve(id);
+    assert.deepEqual(await b.manager.handleCallback(state, "code"), { serverId: id, scheme: "userAuth" });
+    assert.equal(b.registry.get(id)!.creds.userAuth, "at-1");
+
+    // A state works once, on any replica.
+    await assert.rejects(() => a.manager.handleCallback(state, "code"), /Unknown or expired/);
+
+    // And not after its 10-minute window.
+    await a.store.savePendingAuth("stale", vault.encrypt("{}"), Date.now() - 11 * 60_000);
+    await assert.rejects(() => b.manager.handleCallback("stale", "code"), /Unknown or expired/);
+  } finally {
+    await token.close();
+    await a.store.close();
+    await b.store.close();
   }
 });
 

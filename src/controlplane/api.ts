@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from "fastify";
 import {
   createMcpHandler,
@@ -6,7 +7,7 @@ import {
 } from "@modelcontextprotocol/server";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 import { createMcpServer } from "../runtime/server.js";
-import { executeTool } from "../runtime/proxy.js";
+import { executeTool, ToolArgumentError } from "../runtime/proxy.js";
 import { formatDiff } from "../generator/diff.js";
 import { discoverSpec } from "../parser/discover.js";
 import { DASHBOARD_HTML } from "./dashboard.js";
@@ -30,6 +31,11 @@ export interface ControlPlaneOptions {
   adminToken?: string;
   /** Per-server request limit per minute on the hosted MCP endpoint (0 = off). */
   rateLimitPerMin?: number;
+  /**
+   * Extra host names (besides localhost) the API answers to when it has no
+   * admin token, e.g. the public URL's host. See the DNS-rebinding check.
+   */
+  allowedHosts?: string[];
 }
 
 export function buildControlPlane(
@@ -67,14 +73,22 @@ export function buildControlPlane(
     return cached;
   };
 
-  // Resolve a server by id, reading through the shared store on a cache miss so
-  // this replica can serve servers another replica created. OAuth tokens are
-  // (re)injected only when the entry is freshly built, not on every request.
+  // Resolve a server by id through the registry, which keeps its cache in step
+  // with the shared store (servers created, changed, or deleted by another
+  // replica). Whenever it re-read the store for this server, stored OAuth
+  // tokens are re-injected too: another replica may have finished a sign-in
+  // or refreshed a token. That's every few seconds at most, not per request.
   const resolveServer = async (id: string) => {
-    if (registry.get(id)) return registry.get(id);
+    const checked = registry.lastChecked(id);
     const entry = await registry.resolve(id);
-    if (entry && oauth) await oauth.restoreServer(id);
+    if (entry && oauth && registry.lastChecked(id) !== checked) await oauth.restoreServer(id);
+    if (!entry) await dropHandler(id);
     return entry;
+  };
+
+  const dropHandler = async (id: string) => {
+    await handlersByServer.get(id)?.handler.close();
+    handlersByServer.delete(id);
   };
 
   // On a 401, refresh any of the tool's OAuth schemes and signal a retry.
@@ -92,11 +106,30 @@ export function buildControlPlane(
   // shell, health, the OAuth callback, and the token-gated MCP endpoints) are
   // exempt — see isPublicRoute.
   if (opts.adminToken) {
+    const expected = `Bearer ${opts.adminToken}`;
     app.addHook("onRequest", async (request, reply) => {
       if (isPublicRoute(request.url)) return;
-      if (request.headers.authorization !== `Bearer ${opts.adminToken}`) {
+      if (!safeEqual(request.headers.authorization, expected)) {
         return reply.code(401).send({ error: "Unauthorized: admin token required." });
       }
+    });
+  } else {
+    // Without an admin token the API trusts whoever can reach it, which is
+    // meant to be only this machine. DNS rebinding breaks that: a web page on
+    // attacker.example can re-point its own name at 127.0.0.1 and then call
+    // this API from the user's browser. The Host header still names the
+    // attacker's domain, so answer only to local names and configured hosts.
+    const allowed = new Set(
+      ["localhost", "127.0.0.1", "[::1]", ...(opts.allowedHosts ?? [])].map((h) => h.toLowerCase()),
+    );
+    app.addHook("onRequest", async (request, reply) => {
+      const host = hostnameOf(request.headers.host);
+      if (host && (allowed.has(host) || host.endsWith(".localhost"))) return;
+      return reply.code(403).send({
+        error:
+          `Host "${request.headers.host ?? ""}" is not allowed. Without an admin token this ` +
+          `API only answers to localhost; set --admin-token, or --public-url for this host.`,
+      });
     });
   }
 
@@ -112,6 +145,12 @@ export function buildControlPlane(
       return reply
         .code(400)
         .send({ error: "Provide `spec` (URL or file path) or `discover` (base URL)." });
+    }
+    for (const key of ["include", "exclude"] as const) {
+      const patterns = body[key];
+      if (patterns !== undefined && !(Array.isArray(patterns) && patterns.every((p) => typeof p === "string"))) {
+        return reply.code(400).send({ error: `\`${key}\` must be an array of glob patterns.` });
+      }
     }
     try {
       let spec = body.spec;
@@ -129,6 +168,8 @@ export function buildControlPlane(
         name: body.name,
         baseUrl: body.baseUrl,
         auth: body.auth,
+        include: body.include,
+        exclude: body.exclude,
       });
       return reply.code(201).send({
         ...toSummary(entry),
@@ -142,7 +183,10 @@ export function buildControlPlane(
     }
   });
 
-  app.get("/servers", async () => registry.list());
+  app.get("/servers", async () => {
+    await registry.sync();
+    return registry.list();
+  });
 
   app.get("/servers/:id", async (request, reply) => {
     const entry = await resolveServer(idParam(request));
@@ -221,18 +265,25 @@ export function buildControlPlane(
         body: result.body,
       };
     } catch (err) {
-      // Network/DNS failure reaching the upstream (not an HTTP error status).
-      return reply.code(502).send({ error: errMessage(err) });
+      // A bad argument is the caller's mistake; anything else is a network or
+      // DNS failure reaching the upstream (not an HTTP error status).
+      return reply.code(err instanceof ToolArgumentError ? 400 : 502).send({ error: errMessage(err) });
     }
   });
 
   app.get("/servers/:id/logs", async (request, reply) => {
     if (!(await resolveServer(idParam(request)))) return notFound(reply);
     const q = request.query as { tool?: string; status?: string; limit?: string };
+    const status = q.status !== undefined ? Number(q.status) : undefined;
+    const limit = q.limit !== undefined ? Number(q.limit) : undefined;
+    if ((status !== undefined && !Number.isInteger(status)) || (limit !== undefined && !Number.isInteger(limit))) {
+      return reply.code(400).send({ error: "`status` and `limit` must be integers." });
+    }
     const logs = await registry.logs(idParam(request), {
       tool: q.tool,
-      status: q.status !== undefined ? Number(q.status) : undefined,
-      limit: q.limit !== undefined ? Number(q.limit) : undefined,
+      status,
+      // Bounded so one request can't pull the whole log table into memory.
+      limit: limit !== undefined ? Math.min(Math.max(limit, 1), MAX_LOG_LIMIT) : undefined,
     });
     if (!logs) return notFound(reply);
     return logs;
@@ -312,9 +363,7 @@ export function buildControlPlane(
     if (!(await resolveServer(idParam(request)))) return notFound(reply);
     const ok = await registry.remove(idParam(request));
     if (!ok) return notFound(reply);
-    const id = idParam(request);
-    await handlersByServer.get(id)?.handler.close();
-    handlersByServer.delete(id);
+    await dropHandler(idParam(request));
     return reply.code(204).send();
   });
 
@@ -411,7 +460,7 @@ export function buildControlPlane(
 
     // Per-server Bearer token: this endpoint proxies calls using stored
     // credentials, so it must not be open to anyone who knows the URL.
-    if (request.headers.authorization !== `Bearer ${entry.mcpToken}`) {
+    if (!safeEqual(request.headers.authorization, `Bearer ${entry.mcpToken}`)) {
       return reply.code(401).send({ error: "Unauthorized: server MCP token required." });
     }
     // Per-server rate limit to bound cost/abuse on the public proxy.
@@ -425,6 +474,29 @@ export function buildControlPlane(
   });
 
   return app;
+}
+
+/** Most usage-log rows one `/logs` request returns. */
+const MAX_LOG_LIMIT = 1000;
+
+/**
+ * Constant-time string comparison for bearer tokens, so response timing
+ * doesn't reveal how much of a guess was right. Hashing first gives both
+ * sides the same length, which timingSafeEqual requires.
+ */
+function safeEqual(actual: string | undefined, expected: string): boolean {
+  const digest = (value: string) => createHash("sha256").update(value).digest();
+  return actual !== undefined && timingSafeEqual(digest(actual), digest(expected));
+}
+
+/** The host name of a Host header (`localhost:4000` → `localhost`), lowercased. */
+function hostnameOf(header: string | undefined): string | undefined {
+  if (!header) return undefined;
+  try {
+    return new URL(`http://${header}`).hostname.toLowerCase();
+  } catch {
+    return undefined;
+  }
 }
 
 /** Routes exempt from admin auth (shell, health, OAuth callback, MCP endpoints). */

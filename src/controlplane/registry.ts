@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { ingest } from "../parser/openapi.js";
 import { diffTools, type SpecDiff } from "../generator/diff.js";
-import { filterTools, type ToolFilter } from "../generator/filter.js";
+import { filterTools, hasToolFilter, type ToolFilter } from "../generator/filter.js";
 import { type LogStore, type LogQuery, type LogRow } from "../runtime/logstore.js";
 import { loadCredentialsFromEnv, type CredentialStore } from "../runtime/auth.js";
 import { type ServerStore, type ServerRecord } from "./store.js";
@@ -41,6 +41,10 @@ export interface ServerEntry {
   creds: CredentialStore;
   /** Bearer token an agent must present to call this server's MCP endpoint. */
   mcpToken: string;
+  /** The `include` / `exclude` filter, re-applied whenever the spec is re-ingested. */
+  toolFilter?: ToolFilter;
+  /** Version of the stored record this entry matches (see {@link ServerRecord.updatedAt}). */
+  updatedAt: number;
 }
 
 /** Public summary of a server (no internals like the full tool list). */
@@ -66,18 +70,28 @@ export interface RegistryOptions {
    * vault they stay in memory only and don't survive a restart.
    */
   vault?: Vault;
+  /**
+   * How long a cached server is trusted before it's re-checked against the
+   * serverStore, in ms. This is how a replica notices servers that another
+   * replica deleted, changed, or gave new credentials. Default 5000.
+   */
+  staleAfterMs?: number;
 }
 
 export class ServerRegistry {
   private entries = new Map<string, ServerEntry>();
+  /** When each cached entry was last confirmed against the store (epoch ms). */
+  private checkedAt = new Map<string, number>();
   private logStore?: LogStore;
   private serverStore?: ServerStore;
   private vault?: Vault;
+  private staleAfterMs: number;
 
   constructor(opts: RegistryOptions = {}) {
     this.logStore = opts.logStore;
     this.serverStore = opts.serverStore;
     this.vault = opts.vault;
+    this.staleAfterMs = opts.staleAfterMs ?? 5000;
   }
 
   async create(input: CreateServerInput): Promise<ServerEntry> {
@@ -89,7 +103,10 @@ export class ServerRegistry {
       auth: input.auth,
       toolFilter: { include: input.include, exclude: input.exclude },
     });
-    this.entries.set(entry.slug, entry);
+    if (entry.toolFilter && entry.generated.tools.length === 0) {
+      throw new Error("The tool filter removed every tool. Relax include / exclude and try again.");
+    }
+    this.cache(entry);
     await this.serverStore?.upsert(toRecord(entry));
     // Persist only explicitly-provided credentials (encrypted); env-derived
     // ones are re-derived on boot and need no storage.
@@ -111,16 +128,8 @@ export class ServerRegistry {
     let restored = 0;
     for (const record of await this.serverStore.all()) {
       try {
-        const entry = await this.buildEntry({
-          spec: record.specSource,
-          name: record.name,
-          baseUrl: record.baseUrl,
-          slug: record.slug,
-          createdAt: record.createdAt,
-          mcpToken: record.mcpToken,
-        });
-        await this.restoreCredentials(entry); // decrypt persisted creds over env-derived
-        this.entries.set(entry.slug, entry);
+        const entry = await this.entryFromRecord(record);
+        this.cache(entry);
         // Backfill a token for servers created before this feature existed.
         if (!record.mcpToken) await this.serverStore?.upsert(toRecord(entry));
         restored++;
@@ -145,13 +154,13 @@ export class ServerRegistry {
     auth?: CredentialStore;
     mcpToken?: string;
     toolFilter?: ToolFilter;
+    updatedAt?: number;
   }): Promise<ServerEntry> {
     const generated = await ingest(input.spec, { baseUrl: input.baseUrl });
-    if (input.toolFilter) {
-      generated.tools = filterTools(generated.tools, input.toolFilter);
-    }
+    const toolFilter = hasToolFilter(input.toolFilter) ? input.toolFilter : undefined;
+    if (toolFilter) generated.tools = filterTools(generated.tools, toolFilter);
     const name = input.name ?? generated.name;
-    const slug = input.slug ?? this.uniqueSlug(name);
+    const slug = input.slug ?? (await this.uniqueSlug(name));
     const creds: CredentialStore = {
       ...loadCredentialsFromEnv(generated.securitySchemes),
       ...input.auth,
@@ -168,7 +177,35 @@ export class ServerRegistry {
       generated,
       creds,
       mcpToken: input.mcpToken ?? generateToken(),
+      toolFilter,
+      updatedAt: input.updatedAt ?? Date.now(),
     };
+  }
+
+  /** Rebuild an entry from its stored record, with its persisted credentials. */
+  private async entryFromRecord(record: ServerRecord): Promise<ServerEntry> {
+    const entry = await this.buildEntry({
+      spec: record.specSource,
+      name: record.name,
+      baseUrl: record.baseUrl,
+      slug: record.slug,
+      createdAt: record.createdAt,
+      mcpToken: record.mcpToken,
+      toolFilter: record.toolFilter,
+      updatedAt: record.updatedAt ?? 0,
+    });
+    await this.restoreCredentials(entry); // decrypt persisted creds over env-derived
+    return entry;
+  }
+
+  private cache(entry: ServerEntry): void {
+    this.entries.set(entry.slug, entry);
+    this.checkedAt.set(entry.slug, Date.now());
+  }
+
+  private forget(id: string): void {
+    this.entries.delete(id);
+    this.checkedAt.delete(id);
   }
 
   list(): ServerSummary[] {
@@ -179,33 +216,54 @@ export class ServerRegistry {
     return this.entries.get(id);
   }
 
+  /** When this server's cached entry was last confirmed against the store. */
+  lastChecked(id: string): number | undefined {
+    return this.checkedAt.get(id);
+  }
+
   /**
-   * Return a server entry, building it from the shared store on a cache miss.
-   * This is the read-through path that lets one replica serve a server another
-   * replica created: the record lives in Postgres even though this instance's
-   * in-memory cache is cold. Returns undefined if no such record exists.
+   * Return a server entry, kept in step with the shared store. This is how
+   * replicas stay consistent: a server another replica created is built from
+   * its record on first use, and a cached entry older than `staleAfterMs` is
+   * re-checked — dropped if the record was deleted, rebuilt if its version
+   * changed, and given any credentials set elsewhere. Returns undefined if no
+   * such server exists.
    */
   async resolve(id: string): Promise<ServerEntry | undefined> {
     const cached = this.entries.get(id);
-    if (cached) return cached;
-    if (!this.serverStore) return undefined;
+    if (!this.serverStore) return cached;
+    if (cached && Date.now() - (this.checkedAt.get(id) ?? 0) < this.staleAfterMs) return cached;
+
     const record = await this.serverStore.get(id);
-    if (!record) return undefined;
+    if (!record) {
+      this.forget(id); // deleted, possibly by another replica
+      return undefined;
+    }
+    if (cached && (record.updatedAt ?? 0) === cached.updatedAt) {
+      await this.restoreCredentials(cached);
+      this.checkedAt.set(id, Date.now());
+      return cached;
+    }
     try {
-      const entry = await this.buildEntry({
-        spec: record.specSource,
-        name: record.name,
-        baseUrl: record.baseUrl,
-        slug: record.slug,
-        createdAt: record.createdAt,
-        mcpToken: record.mcpToken,
-      });
-      await this.restoreCredentials(entry);
-      this.entries.set(entry.slug, entry);
+      const entry = await this.entryFromRecord(record);
+      this.cache(entry);
       return entry;
     } catch {
-      return undefined; // spec no longer ingestable — treat as unavailable
+      // The spec can't be re-ingested right now; keep serving what we have.
+      return cached;
     }
+  }
+
+  /**
+   * Reconcile this replica's cache with the shared store before listing:
+   * forget servers deleted elsewhere, and pick up or refresh the rest.
+   */
+  async sync(): Promise<void> {
+    if (!this.serverStore) return;
+    const records = await this.serverStore.all();
+    const ids = new Set(records.map((r) => r.id));
+    for (const id of [...this.entries.keys()]) if (!ids.has(id)) this.forget(id);
+    for (const record of records) await this.resolve(record.id);
   }
 
   tools(id: string): ToolDef[] | undefined {
@@ -217,10 +275,13 @@ export class ServerRegistry {
     const entry = this.entries.get(id);
     if (!entry) return undefined;
     const next = await ingest(entry.specSource, { baseUrl: entry.baseUrl });
+    if (entry.toolFilter) next.tools = filterTools(next.tools, entry.toolFilter);
     const diff = diffTools(entry.generated.tools, next.tools);
     entry.generated = next;
     entry.baseUrl = next.baseUrl;
     entry.specHash = hashSpec(next);
+    // Strictly increasing, so other replicas see a change even within one ms.
+    entry.updatedAt = Math.max(Date.now(), entry.updatedAt + 1);
     await this.serverStore?.upsert(toRecord(entry));
     return diff;
   }
@@ -256,7 +317,8 @@ export class ServerRegistry {
   }
 
   async remove(id: string): Promise<boolean> {
-    const existed = this.entries.delete(id);
+    const existed = this.entries.has(id);
+    this.forget(id);
     if (existed) await this.serverStore?.delete(id);
     return existed;
   }
@@ -274,11 +336,19 @@ export class ServerRegistry {
     this.logStore?.record(serverId, entry)?.catch(() => {});
   }
 
-  private uniqueSlug(name: string): string {
+  /**
+   * A slug no server uses yet. The shared store is checked as well as this
+   * replica's cache: a server another replica created may not be loaded here,
+   * and reusing its slug would overwrite its record and inherit its stored
+   * credentials.
+   */
+  private async uniqueSlug(name: string): Promise<string> {
     const base = slugify(name);
-    if (!this.entries.has(base)) return base;
+    const taken = async (slug: string) =>
+      this.entries.has(slug) || (await this.serverStore?.get(slug)) !== undefined;
+    if (!(await taken(base))) return base;
     let i = 2;
-    while (this.entries.has(`${base}-${i}`)) i++;
+    while (await taken(`${base}-${i}`)) i++;
     return `${base}-${i}`;
   }
 }
@@ -305,6 +375,8 @@ function toRecord(entry: ServerEntry): ServerRecord {
     baseUrl: entry.baseUrl,
     createdAt: entry.createdAt,
     mcpToken: entry.mcpToken,
+    toolFilter: entry.toolFilter,
+    updatedAt: entry.updatedAt,
   };
 }
 

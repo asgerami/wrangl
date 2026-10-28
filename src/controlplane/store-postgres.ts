@@ -1,5 +1,11 @@
 import pg from "pg";
-import type { ServerRecord, ServerStore } from "./store.js";
+import {
+  decodeToolFilter,
+  encodeToolFilter,
+  type PendingAuthRow,
+  type ServerRecord,
+  type ServerStore,
+} from "./store.js";
 
 /**
  * Postgres-backed {@link ServerStore} for running multiple control-plane
@@ -15,8 +21,15 @@ const SCHEMA = `
     spec_source TEXT NOT NULL,
     base_url    TEXT NOT NULL,
     created_at  BIGINT NOT NULL,
-    mcp_token   TEXT
+    mcp_token   TEXT,
+    tool_filter TEXT,
+    updated_at  BIGINT
   );
+  -- CREATE TABLE IF NOT EXISTS leaves an older table as it was; add any
+  -- columns that arrived after it was created.
+  ALTER TABLE servers ADD COLUMN IF NOT EXISTS mcp_token TEXT;
+  ALTER TABLE servers ADD COLUMN IF NOT EXISTS tool_filter TEXT;
+  ALTER TABLE servers ADD COLUMN IF NOT EXISTS updated_at BIGINT;
   CREATE TABLE IF NOT EXISTS credentials (
     server_id   TEXT NOT NULL,
     scheme      TEXT NOT NULL,
@@ -29,6 +42,11 @@ const SCHEMA = `
     data_enc    TEXT NOT NULL,
     PRIMARY KEY (server_id, scheme)
   );
+  CREATE TABLE IF NOT EXISTS oauth_pending (
+    state       TEXT PRIMARY KEY,
+    data_enc    TEXT NOT NULL,
+    created_at  BIGINT NOT NULL
+  );
 `;
 
 interface Row {
@@ -39,6 +57,8 @@ interface Row {
   base_url: string;
   created_at: string | number; // BIGINT comes back as a string from pg
   mcp_token: string | null;
+  tool_filter: string | null;
+  updated_at: string | number | null;
 }
 
 export class PostgresServerStore implements ServerStore {
@@ -52,13 +72,25 @@ export class PostgresServerStore implements ServerStore {
 
   async upsert(r: ServerRecord): Promise<void> {
     await this.pool.query(
-      `INSERT INTO servers (id, name, slug, spec_source, base_url, created_at, mcp_token)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO servers
+         (id, name, slug, spec_source, base_url, created_at, mcp_token, tool_filter, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name, slug = EXCLUDED.slug,
          spec_source = EXCLUDED.spec_source, base_url = EXCLUDED.base_url,
-         mcp_token = EXCLUDED.mcp_token`,
-      [r.id, r.name, r.slug, r.specSource, r.baseUrl, r.createdAt, r.mcpToken ?? null],
+         mcp_token = EXCLUDED.mcp_token, tool_filter = EXCLUDED.tool_filter,
+         updated_at = EXCLUDED.updated_at`,
+      [
+        r.id,
+        r.name,
+        r.slug,
+        r.specSource,
+        r.baseUrl,
+        r.createdAt,
+        r.mcpToken ?? null,
+        encodeToolFilter(r.toolFilter),
+        r.updatedAt ?? null,
+      ],
     );
   }
 
@@ -114,6 +146,26 @@ export class PostgresServerStore implements ServerStore {
     return out;
   }
 
+  async savePendingAuth(state: string, dataEnc: string, createdAt: number): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO oauth_pending (state, data_enc, created_at) VALUES ($1, $2, $3)`,
+      [state, dataEnc, createdAt],
+    );
+  }
+
+  async takePendingAuth(state: string): Promise<PendingAuthRow | undefined> {
+    const res = await this.pool.query<{ data_enc: string; created_at: string }>(
+      `DELETE FROM oauth_pending WHERE state = $1 RETURNING data_enc, created_at`,
+      [state],
+    );
+    const row = res.rows[0];
+    return row ? { dataEnc: row.data_enc, createdAt: Number(row.created_at) } : undefined;
+  }
+
+  async prunePendingAuth(cutoff: number): Promise<void> {
+    await this.pool.query(`DELETE FROM oauth_pending WHERE created_at < $1`, [cutoff]);
+  }
+
   async close(): Promise<void> {
     await this.pool.end();
   }
@@ -128,5 +180,7 @@ function fromRow(row: Row): ServerRecord {
     baseUrl: row.base_url,
     createdAt: Number(row.created_at),
     mcpToken: row.mcp_token ?? undefined,
+    toolFilter: decodeToolFilter(row.tool_filter),
+    updatedAt: row.updated_at === null ? undefined : Number(row.updated_at),
   };
 }

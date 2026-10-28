@@ -2,9 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import { SqliteServerStore } from "../src/controlplane/store.js";
 import { ServerRegistry } from "../src/controlplane/registry.js";
 import { Vault } from "../src/controlplane/vault.js";
@@ -56,6 +57,96 @@ test("a server created with a store survives a fresh registry (rehydrate)", asyn
   // createdAt is preserved across the restart.
   assert.equal(list[0].createdAt, created.createdAt);
   await store2.close();
+});
+
+test("a server's tool filter survives a restart", async () => {
+  const dbPath = join(await mkdtemp(join(tmpdir(), "wrangl-persist-")), "cp.db");
+  const store1 = SqliteServerStore.open(dbPath);
+  await new ServerRegistry({ serverStore: store1 }).create({ spec: SPEC, name: "JP", include: ["get*"] });
+  await store1.close();
+
+  const store2 = SqliteServerStore.open(dbPath);
+  const reg2 = new ServerRegistry({ serverStore: store2 });
+  await reg2.load();
+  assert.deepEqual(reg2.tools("jp")?.map((t) => t.name).sort(), ["getpost", "getuser"]);
+  await store2.close();
+});
+
+test("two replicas sharing a store never hand out the same slug", async () => {
+  const dbPath = join(await mkdtemp(join(tmpdir(), "wrangl-persist-")), "cp.db");
+  // Both replicas boot first, so neither has the other's servers in memory.
+  const storeA = SqliteServerStore.open(dbPath);
+  const storeB = SqliteServerStore.open(dbPath);
+  const replicaA = new ServerRegistry({ serverStore: storeA });
+  const replicaB = new ServerRegistry({ serverStore: storeB });
+
+  const first = await replicaA.create({ spec: SPEC, name: "Shared API" });
+  const second = await replicaB.create({ spec: SPEC, name: "Shared API" });
+  assert.equal(first.slug, "shared-api");
+  assert.equal(second.slug, "shared-api-2", "B must not reuse (and overwrite) A's slug");
+  assert.equal((await storeA.get("shared-api"))?.mcpToken, first.mcpToken, "A's record is intact");
+  await storeA.close();
+  await storeB.close();
+});
+
+test("a replica sees credentials, regenerates, creates, and deletes made by another", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wrangl-persist-"));
+  const dbPath = join(dir, "cp.db");
+  const specPath = join(dir, "spec.json");
+  const spec = (paths: string[]) =>
+    JSON.stringify({
+      openapi: "3.0.0",
+      info: { title: "Shared", version: "1" },
+      servers: [{ url: "https://api.example.test" }],
+      paths: Object.fromEntries(paths.map((p) => [p, { get: { responses: {} } }])),
+    });
+  await writeFile(specPath, spec(["/a", "/b"]));
+
+  const vault = new Vault(randomBytes(32));
+  const storeA = SqliteServerStore.open(dbPath);
+  const storeB = SqliteServerStore.open(dbPath);
+  // staleAfterMs: 0 re-checks the store on every lookup, so no waiting.
+  const replicaA = new ServerRegistry({ serverStore: storeA, vault, staleAfterMs: 0 });
+  const replicaB = new ServerRegistry({ serverStore: storeB, vault, staleAfterMs: 0 });
+
+  const { id } = await replicaA.create({ spec: specPath, name: "Shared" });
+  assert.equal((await replicaB.resolve(id))?.generated.tools.length, 2, "read-through on first use");
+
+  await replicaA.setCredential(id, "apiKey", "k-new");
+  assert.equal((await replicaB.resolve(id))?.creds.apiKey, "k-new", "credential set elsewhere");
+
+  await writeFile(specPath, spec(["/a"]));
+  await replicaA.regenerate(id);
+  assert.equal((await replicaB.resolve(id))?.generated.tools.length, 1, "regenerated elsewhere");
+
+  const other = await replicaA.create({ spec: specPath, name: "Other" });
+  await replicaB.sync();
+  assert.ok(replicaB.list().some((s) => s.id === other.id), "created elsewhere shows in the list");
+
+  await replicaA.remove(id);
+  assert.equal(await replicaB.resolve(id), undefined, "deleted elsewhere stops being served");
+  await replicaB.sync();
+  assert.deepEqual(replicaB.list().map((s) => s.id), [other.id]);
+
+  await storeA.close();
+  await storeB.close();
+});
+
+test("a database from before tool filters is migrated on open", async () => {
+  const dbPath = join(await mkdtemp(join(tmpdir(), "wrangl-persist-")), "old.db");
+  const old = new DatabaseSync(dbPath);
+  old.exec(`CREATE TABLE servers (id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL,
+    spec_source TEXT NOT NULL, base_url TEXT NOT NULL, created_at INTEGER NOT NULL)`);
+  old.prepare("INSERT INTO servers VALUES (?, ?, ?, ?, ?, ?)").run("jp", "JP", "jp", SPEC, "https://x", 1);
+  old.close();
+
+  const store = SqliteServerStore.open(dbPath);
+  const record = await store.get("jp");
+  assert.equal(record?.toolFilter, undefined);
+  assert.equal(record?.mcpToken, undefined);
+  await store.upsert({ ...record!, toolFilter: { include: ["get*"] } });
+  assert.deepEqual((await store.get("jp"))?.toolFilter, { include: ["get*"] });
+  await store.close();
 });
 
 test("credentials persist encrypted and are restored on rehydrate", async () => {

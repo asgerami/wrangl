@@ -7,6 +7,7 @@ import { openServerStore, isPostgresUrl } from "../src/controlplane/store.js";
 import { openLogStore } from "../src/runtime/logstore.js";
 import { ServerRegistry } from "../src/controlplane/registry.js";
 import { Vault } from "../src/controlplane/vault.js";
+import pg from "pg";
 
 /**
  * Postgres backend integration tests. Skipped unless WRANGL_PG_URL points at a
@@ -93,5 +94,49 @@ test("two registries sharing Postgres behave like replicas (read-through)", { sk
   } finally {
     await store1.close();
     await store2.close();
+  }
+});
+
+test("an older Postgres servers table gains the newer columns on connect", { skip }, async () => {
+  // A schema of its own, so this test's old-style table can't disturb the others.
+  const schema = `wrangl_migrate_${ns()}`;
+  const admin = new pg.Pool({ connectionString: PG });
+  await admin.query(`CREATE SCHEMA ${schema}`);
+  await admin.query(
+    `CREATE TABLE ${schema}.servers (id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL,
+       spec_source TEXT NOT NULL, base_url TEXT NOT NULL, created_at BIGINT NOT NULL)`,
+  );
+  try {
+    const url = new URL(PG!);
+    url.searchParams.set("options", `-c search_path=${schema}`);
+    const store = await openServerStore(url.toString());
+    await store.upsert({
+      id: "jp", name: "JP", slug: "jp", specSource: SPEC, baseUrl: "https://x", createdAt: 1,
+      mcpToken: "tok", toolFilter: { include: ["get*"] },
+    });
+    const record = await store.get("jp");
+    assert.equal(record?.mcpToken, "tok");
+    assert.deepEqual(record?.toolFilter, { include: ["get*"] });
+    await store.close();
+  } finally {
+    await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+    await admin.end();
+  }
+});
+
+test("Postgres keeps pending OAuth sign-ins single-use and prunes old ones", { skip }, async () => {
+  const store = await openServerStore(PG!);
+  const state = ns();
+  try {
+    await store.savePendingAuth(state, "enc", Date.now());
+    assert.equal((await store.takePendingAuth(state))?.dataEnc, "enc");
+    assert.equal(await store.takePendingAuth(state), undefined, "a state works once");
+
+    const old = ns();
+    await store.savePendingAuth(old, "enc", Date.now() - 3_600_000);
+    await store.prunePendingAuth(Date.now() - 600_000);
+    assert.equal(await store.takePendingAuth(old), undefined, "expired sign-ins are pruned");
+  } finally {
+    await store.close();
   }
 });

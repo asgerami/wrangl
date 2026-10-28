@@ -188,11 +188,13 @@ async function tokenRequest(
     throw new Error(`Token response missing access_token: ${text.slice(0, 200)}`);
   }
 
-  const expiresIn = typeof json.expires_in === "number" ? json.expires_in : undefined;
+  // Some providers send expires_in as a numeric string ("3600"); without it
+  // the token is never refreshed ahead of expiry, only after a 401.
+  const expiresIn = Number(json.expires_in);
   return {
     accessToken: json.access_token,
     refreshToken: typeof json.refresh_token === "string" ? json.refresh_token : undefined,
-    expiresAt: expiresIn !== undefined ? Date.now() + expiresIn * 1000 : undefined,
+    expiresAt: Number.isFinite(expiresIn) && expiresIn > 0 ? Date.now() + expiresIn * 1000 : undefined,
     scope: typeof json.scope === "string" ? json.scope : undefined,
     tokenType: typeof json.token_type === "string" ? json.token_type : undefined,
   };

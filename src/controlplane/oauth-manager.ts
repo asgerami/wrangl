@@ -55,11 +55,11 @@ export interface OAuthStatus {
   flows?: OAuthFlow[];
 }
 
+/** An authorization in progress, stored encrypted under its CSRF state. */
 interface Pending {
   serverId: string;
   scheme: string;
   codeVerifier: string;
-  createdAt: number;
 }
 
 const PENDING_TTL_MS = 10 * 60 * 1000; // authorization requests expire after 10m
@@ -69,7 +69,6 @@ export class OAuthManager {
   private store: ServerStore;
   private vault: Vault;
   private callbackUrl: string;
-  private pending = new Map<string, Pending>();
 
   constructor(opts: {
     registry: ServerRegistry;
@@ -131,8 +130,10 @@ export class OAuthManager {
     }
     const csrf = generateState();
     const verifier = generateCodeVerifier();
-    this.pending.set(csrf, { serverId, scheme, codeVerifier: verifier, createdAt: Date.now() });
-    this.sweepPending();
+    // Kept in the shared store, so the provider's redirect can reach any replica.
+    const pending: Pending = { serverId, scheme, codeVerifier: verifier };
+    await this.store.savePendingAuth(csrf, this.vault.encrypt(JSON.stringify(pending)), Date.now());
+    await this.store.prunePendingAuth(Date.now() - PENDING_TTL_MS);
     return buildAuthorizeUrl(toConfig(state.config), {
       state: csrf,
       codeChallenge: codeChallenge(verifier),
@@ -167,12 +168,17 @@ export class OAuthManager {
 
   /** Handle the provider redirect: exchange the code and store the tokens. */
   async handleCallback(csrf: string, code: string): Promise<{ serverId: string; scheme: string }> {
-    const pending = this.pending.get(csrf);
-    if (!pending || Date.now() - pending.createdAt > PENDING_TTL_MS) {
-      this.pending.delete(csrf);
-      throw new Error("Unknown or expired authorization state.");
+    // Taking the row deletes it, so a state can't be replayed.
+    const row = await this.store.takePendingAuth(csrf);
+    let pending: Pending | undefined;
+    if (row && Date.now() - row.createdAt <= PENDING_TTL_MS) {
+      try {
+        pending = JSON.parse(this.vault.decrypt(row.dataEnc)) as Pending;
+      } catch {
+        pending = undefined; // wrong key or tampered
+      }
     }
-    this.pending.delete(csrf);
+    if (!pending) throw new Error("Unknown or expired authorization state.");
 
     const state = await this.loadState(pending.serverId, pending.scheme);
     if (!state) throw new Error("OAuth configuration disappeared mid-flow.");
@@ -323,10 +329,6 @@ export class OAuthManager {
     await this.store.setOAuth(serverId, scheme, this.vault.encrypt(JSON.stringify(state)));
   }
 
-  private sweepPending(): void {
-    const cutoff = Date.now() - PENDING_TTL_MS;
-    for (const [key, p] of this.pending) if (p.createdAt < cutoff) this.pending.delete(key);
-  }
 }
 
 function toConfig(c: StoredConfig): OAuthConfig {

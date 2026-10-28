@@ -114,6 +114,25 @@ test("refreshTokens uses the refresh grant and keeps the old refresh token", asy
   }
 });
 
+test("a token's expiry is read whether expires_in is a number or a numeric string", async () => {
+  for (const expires_in of [3600, "3600"]) {
+    const srv = await tokenServer(() => ({ access_token: "at", expires_in }));
+    try {
+      const before = Date.now();
+      const tokens = await refreshTokens(CONFIG({ tokenUrl: srv.url }), "rt");
+      assert.ok(tokens.expiresAt! >= before + 3_600_000 && tokens.expiresAt! <= Date.now() + 3_600_000, String(expires_in));
+    } finally {
+      await srv.close();
+    }
+  }
+  const srv = await tokenServer(() => ({ access_token: "at", expires_in: "soon" }));
+  try {
+    assert.equal((await refreshTokens(CONFIG({ tokenUrl: srv.url }), "rt")).expiresAt, undefined);
+  } finally {
+    await srv.close();
+  }
+});
+
 test("clientCredentialsGrant posts the client_credentials grant", async () => {
   const { clientCredentialsGrant } = await import("../src/controlplane/oauth.js");
   const srv = await tokenServer(() => ({

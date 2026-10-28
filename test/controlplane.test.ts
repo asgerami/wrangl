@@ -31,6 +31,29 @@ test("POST /servers creates a server from a spec", async () => {
   await a.close();
 });
 
+test("POST /servers applies include / exclude, and regenerate keeps them", async () => {
+  const { app: a } = app();
+  const res = await createServer(a, { spec: SPEC, name: "JP", include: ["*post*"], exclude: ["createpost"] });
+  assert.equal(res.statusCode, 201);
+  assert.equal(res.json().toolCount, 2, "listposts + getpost");
+
+  const regen = await a.inject({ method: "POST", url: "/servers/jp/regenerate" });
+  assert.equal(regen.statusCode, 200);
+  assert.equal(regen.json().summary.split("\n")[0], "+0 added  ~0 changed  -0 removed");
+  const tools = (await a.inject({ url: "/servers/jp/tools" })).json() as Array<{ name: string }>;
+  assert.deepEqual(tools.map((t) => t.name).sort(), ["getpost", "listposts"]);
+  await a.close();
+});
+
+test("POST /servers rejects a filter that is malformed or removes every tool", async () => {
+  const { app: a } = app();
+  assert.equal((await createServer(a, { spec: SPEC, include: "posts" })).statusCode, 400);
+  const empty = await createServer(a, { spec: SPEC, include: ["no-such-tool"] });
+  assert.equal(empty.statusCode, 400);
+  assert.match(empty.json().error, /removed every tool/);
+  await a.close();
+});
+
 test("POST /servers without a spec is a 400", async () => {
   const { app: a } = app();
   const res = await createServer(a, { name: "x" });
