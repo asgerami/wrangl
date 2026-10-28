@@ -44,6 +44,8 @@
     margin: 0; padding: 12px 14px; border-bottom: 1px solid var(--border); font-weight: 600; }
   form { padding: 14px; display: grid; gap: 8px; }
   label { font-size: 12px; color: var(--muted); }
+  label.check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  label.check input { width: auto; margin: 0; }
   input, textarea {
     width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
     background: var(--bg); color: var(--text); font: inherit; font-size: 13px;
@@ -157,6 +159,10 @@
           <label for="f-base">Base URL override (optional)</label>
           <input id="f-base" placeholder="https://api.example.com" />
         </div>
+        <label class="check">
+          <input id="f-discovery" type="checkbox" />
+          Discovery mode: 3 tools that search and call the endpoints (for large APIs)
+        </label>
         <button type="submit" class="primary" id="create-btn">Create server</button>
       </form>
     </div>
@@ -230,7 +236,7 @@ async function selectServer(id) {
   $("#detail").innerHTML = `
     <div class="head">
       <div class="title">${esc(s.name)}</div>
-      <div class="sub">${esc(s.baseUrl)} · ${s.toolCount} tools · spec ${esc(s.specHash)}</div>
+      <div class="sub">${esc(s.baseUrl)} · ${s.toolCount} ${s.toolMode === "discovery" ? "endpoints, served in discovery mode" : "tools"} · spec ${esc(s.specHash)}</div>
       <div class="urlbar">
         <code id="mcp-url">${esc(mcpUrl)}</code>
         <button id="copy-url">Copy URL</button>
@@ -591,6 +597,7 @@ $("#create-form").addEventListener("submit", async (e) => {
     const payload = { spec: $("#f-spec").value.trim() };
     if ($("#f-name").value.trim()) payload.name = $("#f-name").value.trim();
     if ($("#f-base").value.trim()) payload.baseUrl = $("#f-base").value.trim();
+    if ($("#f-discovery").checked) payload.toolMode = "discovery";
     const created = await api("/servers", {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
     });

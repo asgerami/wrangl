@@ -73,12 +73,15 @@ import {
   parseAuthFlags,
   type CredentialStore,
 } from "./runtime/auth.js";
-import type { GeneratedServer } from "./types.js";
+import type { GeneratedServer, ToolMode } from "./types.js";
 
 /** Default location for the persistent usage-log database. */
 const DEFAULT_LOG_DB = join(process.cwd(), ".wrangl", "logs.db");
 
 const DEFAULT_LOG_RETENTION_DAYS = 30;
+
+/** `install` suggests --discovery for APIs with more tools than this. */
+const DISCOVERY_SUGGESTED_ABOVE = 50;
 const LOG_RETENTION_HELP =
   `Days to keep usage logs, 0 = forever (env WRANGL_LOG_RETENTION_DAYS; default ${DEFAULT_LOG_RETENTION_DAYS})`;
 
@@ -129,6 +132,7 @@ program
     collect,
     [],
   )
+  .option("--discovery", "Expose 3 tools that search, describe, and call the endpoints, instead of one tool each (for large APIs)")
   .option(
     "-e, --enrich",
     "Run the LLM semantic-enrichment pass (needs ANTHROPIC_API_KEY)",
@@ -156,6 +160,10 @@ program
 
       const creds = resolveCredentials(active, options.auth);
       warnMissingCreds(active, creds);
+      const toolMode: ToolMode = options.discovery ? "discovery" : "endpoints";
+      if (options.discovery) {
+        console.error(`→ discovery mode: 3 tools over ${active.tools.length} endpoints`);
+      }
 
       const store = await maybeOpenLogStore(options.logDb);
       if (store) {
@@ -189,7 +197,7 @@ program
 
       if (options.transport === "http") {
         const port = Number(options.port);
-        await serveHttp(() => createMcpServer(active, { creds, onLog }), { port });
+        await serveHttp(() => createMcpServer(active, { creds, onLog, toolMode }), { port });
         console.error(
           `\nMCP server live at http://127.0.0.1:${port}/mcp ` +
             `(Streamable HTTP)\nPress Ctrl+C to stop.`,
@@ -202,7 +210,7 @@ program
           if (hasChanges(diff)) console.error(`\n↻ spec changed:\n${formatDiff(diff)}`);
         });
       } else {
-        const reloadable = createReloadableServer(active, { creds, onLog });
+        const reloadable = createReloadableServer(active, { creds, onLog, toolMode });
         console.error("\nMCP server live on stdio. Connect an agent client.");
         startWatch((next) => {
           applyToolFilter(next, options);
@@ -329,6 +337,7 @@ const installOptions = (cmd: Command): Command =>
       collect,
       [],
     )
+    .option("--discovery", "Expose 3 tools that search, describe, and call the endpoints, instead of one tool each (for large APIs)")
     .option(
       "--env <KEY=value>",
       "Set an environment variable for the server, e.g. its API key (repeatable)",
@@ -554,6 +563,7 @@ async function runInstall(
     include?: string[];
     exclude?: string[];
     env?: string[];
+    discovery?: boolean;
   },
 ): Promise<void> {
   const clientName = options.client ?? "claude";
@@ -582,6 +592,7 @@ async function runInstall(
     baseUrl: options.baseUrl,
     include: options.include,
     exclude: options.exclude,
+    discovery: options.discovery,
   });
   if (env) entry.env = env;
   console.error(`→ generated ${generated.tools.length} tools from ${generated.name}`);
@@ -610,11 +621,20 @@ async function runInstall(
         `\nThe key is saved in the client's config file.`
       : "";
 
+  // Past this many tools, agents start choosing worse (and pay for every
+  // definition in context); discovery mode is the fix.
+  const discoveryHint =
+    !options.discovery && generated.tools.length > DISCOVERY_SUGGESTED_ABOVE
+      ? `\n\nThat's ${generated.tools.length} tools, more than agents handle well. Add ` +
+        `--discovery to expose 3 tools that search, describe, and call them instead.`
+      : "";
+
   console.error(
     `\n✓ ${result.replaced ? "Updated" : "Added"} "${name}" in ${target}` +
       `\n  ${result.path}` +
       (result.backup ? `\n  (backup: ${result.backup})` : "") +
       authHint +
+      discoveryHint +
       `\n\nRestart ${target} — ${generated.tools.length} ` +
       `${generated.tools.length === 1 ? "tool" : "tools"} from ${generated.name} ready.`,
   );

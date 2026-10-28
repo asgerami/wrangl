@@ -62,6 +62,7 @@ export function buildControlPlane(
         creds: entry.creds,
         onLog: (e) => registry.recordLog(id, e),
         onUnauthorized: oauthRefresher(id),
+        toolMode: entry.toolMode,
       });
     };
     const handler = createMcpHandler(factory, {
@@ -146,6 +147,9 @@ export function buildControlPlane(
         .code(400)
         .send({ error: "Provide `spec` (URL or file path) or `discover` (base URL)." });
     }
+    if (body.toolMode !== undefined && body.toolMode !== "endpoints" && body.toolMode !== "discovery") {
+      return reply.code(400).send({ error: '`toolMode` must be "endpoints" or "discovery".' });
+    }
     for (const key of ["include", "exclude"] as const) {
       const patterns = body[key];
       if (patterns !== undefined && !(Array.isArray(patterns) && patterns.every((p) => typeof p === "string"))) {
@@ -170,6 +174,7 @@ export function buildControlPlane(
         auth: body.auth,
         include: body.include,
         exclude: body.exclude,
+        toolMode: body.toolMode,
       });
       return reply.code(201).send({
         ...toSummary(entry),

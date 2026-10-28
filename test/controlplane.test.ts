@@ -54,6 +54,36 @@ test("POST /servers rejects a filter that is malformed or removes every tool", a
   await a.close();
 });
 
+test("a hosted server can be served in discovery mode", async () => {
+  const { app: a } = app();
+  assert.equal((await createServer(a, { spec: SPEC, toolMode: "everything" })).statusCode, 400);
+  const res = await createServer(a, { spec: SPEC, name: "JP", toolMode: "discovery" });
+  assert.equal(res.statusCode, 201);
+  assert.equal(res.json().toolMode, "discovery");
+  assert.equal(res.json().toolCount, 4, "toolCount still counts endpoints");
+
+  // The hosted MCP endpoint lists the three discovery tools, over real HTTP.
+  await a.listen({ port: 0, host: "127.0.0.1" });
+  const { port } = a.server.address() as AddressInfo;
+  const list = await fetch(`http://127.0.0.1:${port}${res.json().mcpPath}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${res.json().mcpToken}`,
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      "mcp-protocol-version": "2026-07-28",
+      "mcp-method": "tools/list",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0", id: 1, method: "tools/list",
+      params: { _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {} } },
+    }),
+  });
+  const names = ((await list.json()) as { result: { tools: Array<{ name: string }> } }).result.tools.map((t) => t.name);
+  assert.deepEqual(names.sort(), ["call_endpoint", "describe_endpoint", "search_endpoints"]);
+  await a.close();
+});
+
 test("POST /servers without a spec is a 400", async () => {
   const { app: a } = app();
   const res = await createServer(a, { name: "x" });

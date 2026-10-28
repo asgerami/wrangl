@@ -154,6 +154,8 @@ export interface BuildServerEntryOptions {
   baseUrl?: string;
   include?: string[];
   exclude?: string[];
+  /** Serve the endpoints through discovery mode's three tools (`--discovery`). */
+  discovery?: boolean;
 }
 
 /**
@@ -181,6 +183,7 @@ export function buildServerEntry(
   if (opts.baseUrl) args.push("--base-url", opts.baseUrl);
   for (const pattern of opts.include ?? []) args.push("--include", pattern);
   for (const pattern of opts.exclude ?? []) args.push("--exclude", pattern);
+  if (opts.discovery) args.push("--discovery");
   return { command: self.command, args };
 }
 

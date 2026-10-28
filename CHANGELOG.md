@@ -9,6 +9,20 @@ While the project is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Discovery mode for large APIs.** `--discovery` on `generate`, `install`,
+  and `add` (and `"toolMode": "discovery"` on `POST /servers`, or a dashboard
+  checkbox) serves an API through three tools instead of one per endpoint:
+  `search_endpoints` (keyword search that maps action words to methods and
+  prefers endpoints the query explains fully), `describe_endpoint`, and
+  `call_endpoint`, which validates arguments against the endpoint's schema
+  and keeps the destructive-action confirmation, bound to the endpoint
+  called. GitHub's 1,254 endpoints become three tool definitions. `install`
+  suggests it for APIs with more than 50 tools, and the setting is stored
+  per hosted server. A nightly test checks that real GitHub and Stripe tasks
+  find their endpoint in the top three results.
+
 ## [0.5.0] - 2026-10-28
 
 ### Added

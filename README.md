@@ -42,7 +42,7 @@ No spec? Add a ready-made server from the catalog:
 ```bash
 npx @asgerami/wrangl catalog      # list what's available
 npx @asgerami/wrangl add stripe   # 600+ tools
-npx @asgerami/wrangl add github --include "repos*"
+npx @asgerami/wrangl add github --discovery
 ```
 
 For an API that needs a key, pass it with `--env`, for example
@@ -70,6 +70,9 @@ error rates, and latency.
   Twilio, Discord, Slack, SendGrid, and PagerDuty.
 - **Spec discovery.** Point it at a base URL and it finds the spec, even
   when it's only linked from a docs page.
+- **Discovery mode for large APIs.** `--discovery` exposes three tools that
+  search, describe, and call the endpoints instead of one tool each, so
+  GitHub's 1,254 endpoints cost an agent three tool definitions.
 - **Real-world specs.** OpenAPI 3.x and Postman collections, including
   recursive schemas. `--include` and `--exclude` trim huge APIs down to the
   tools an agent needs.

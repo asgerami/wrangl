@@ -1,6 +1,7 @@
 import pg from "pg";
 import {
   decodeToolFilter,
+  decodeToolMode,
   encodeToolFilter,
   type PendingAuthRow,
   type ServerRecord,
@@ -23,13 +24,15 @@ const SCHEMA = `
     created_at  BIGINT NOT NULL,
     mcp_token   TEXT,
     tool_filter TEXT,
-    updated_at  BIGINT
+    updated_at  BIGINT,
+    tool_mode   TEXT
   );
   -- CREATE TABLE IF NOT EXISTS leaves an older table as it was; add any
   -- columns that arrived after it was created.
   ALTER TABLE servers ADD COLUMN IF NOT EXISTS mcp_token TEXT;
   ALTER TABLE servers ADD COLUMN IF NOT EXISTS tool_filter TEXT;
   ALTER TABLE servers ADD COLUMN IF NOT EXISTS updated_at BIGINT;
+  ALTER TABLE servers ADD COLUMN IF NOT EXISTS tool_mode TEXT;
   CREATE TABLE IF NOT EXISTS credentials (
     server_id   TEXT NOT NULL,
     scheme      TEXT NOT NULL,
@@ -59,6 +62,7 @@ interface Row {
   mcp_token: string | null;
   tool_filter: string | null;
   updated_at: string | number | null;
+  tool_mode: string | null;
 }
 
 export class PostgresServerStore implements ServerStore {
@@ -73,13 +77,13 @@ export class PostgresServerStore implements ServerStore {
   async upsert(r: ServerRecord): Promise<void> {
     await this.pool.query(
       `INSERT INTO servers
-         (id, name, slug, spec_source, base_url, created_at, mcp_token, tool_filter, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         (id, name, slug, spec_source, base_url, created_at, mcp_token, tool_filter, updated_at, tool_mode)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name, slug = EXCLUDED.slug,
          spec_source = EXCLUDED.spec_source, base_url = EXCLUDED.base_url,
          mcp_token = EXCLUDED.mcp_token, tool_filter = EXCLUDED.tool_filter,
-         updated_at = EXCLUDED.updated_at`,
+         updated_at = EXCLUDED.updated_at, tool_mode = EXCLUDED.tool_mode`,
       [
         r.id,
         r.name,
@@ -90,6 +94,7 @@ export class PostgresServerStore implements ServerStore {
         r.mcpToken ?? null,
         encodeToolFilter(r.toolFilter),
         r.updatedAt ?? null,
+        r.toolMode ?? null,
       ],
     );
   }
@@ -182,5 +187,6 @@ function fromRow(row: Row): ServerRecord {
     mcpToken: row.mcp_token ?? undefined,
     toolFilter: decodeToolFilter(row.tool_filter),
     updatedAt: row.updated_at === null ? undefined : Number(row.updated_at),
+    toolMode: decodeToolMode(row.tool_mode),
   };
 }

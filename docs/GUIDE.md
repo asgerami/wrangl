@@ -9,6 +9,7 @@ The complete reference. For the elevator pitch and quick start, see the
 - [Protocol support](#protocol-support)
 - [CLI reference](#cli-reference)
 - [Connecting to your agent](#connecting-to-your-agent)
+- [Discovery mode for large APIs](#discovery-mode-for-large-apis)
 - [Authentication](#authentication)
 - [Reliability](#reliability)
 - [Destructive-action confirmation](#destructive-action-confirmation)
@@ -86,6 +87,7 @@ wrangl install <api> [options]     Discover, generate, and wire into your agent 
   --include <pattern>     Only keep matching tools (glob; name/path/tag; repeatable)
   --exclude <pattern>     Drop matching tools (glob; repeatable)
   --env <KEY=value>       Set an env var for the server, e.g. its API key (repeatable)
+  --discovery             Serve through 3 search/describe/call tools (large APIs)
   --print                 Print the config block instead of writing it
 
 wrangl add <id>                    Install a ready-made server from the catalog
@@ -95,6 +97,7 @@ wrangl generate --spec <url|file> [options]
   -s, --spec <source>     OpenAPI 3.x spec or Postman collection: a URL or file
   -d, --discover <url>    Auto-discover the spec by probing a base URL
   --catalog <id>          Use a ready-made spec from the catalog
+  --discovery             Expose 3 tools that search, describe, and call endpoints
   -b, --base-url <url>    Upstream base URL (overrides the spec's servers)
   -t, --transport <type>  stdio | http (default stdio)
   -p, --port <number>     Port for the http transport (default 3000)
@@ -190,6 +193,39 @@ Or add it by hand to your client's config (`claude_desktop_config.json`):
 ```
 
 Restart the client and the API's endpoints appear as callable tools.
+
+## Discovery mode for large APIs
+
+One tool per endpoint works for small APIs, but it doesn't scale: GitHub's spec
+is 1,254 endpoints, and every tool definition an agent can see costs context
+and makes the right one harder to pick. `--discovery` exposes three tools
+instead, whatever the API's size:
+
+- `search_endpoints`: keyword search over every endpoint's name, path, tags,
+  description, and parameters. Action words count toward the matching method
+  ("create" for POST, "delete" for DELETE), and an endpoint the query explains
+  fully ranks above one with extra words, so "create issue" finds
+  `issues_create` rather than `issues_create_comment`.
+- `describe_endpoint`: one endpoint's full description and the JSON Schema of
+  its arguments.
+- `call_endpoint`: calls an endpoint by name. The arguments are checked
+  against that endpoint's schema first, so a mistake comes back as a fixable
+  error rather than a bad upstream request. Destructive endpoints still need
+  confirmation, bound to the endpoint being called and its exact arguments.
+
+```bash
+wrangl add github --discovery                  # 3 tools over 1,254 endpoints
+wrangl generate --spec api.yaml --discovery
+```
+
+`install` and `add` suggest it for APIs with more than 50 tools. It combines
+with `--include` / `--exclude`, which then narrow what search can find. On the
+hosted control plane, pass `"toolMode": "discovery"` to `POST /servers` (or tick
+the box in the dashboard); in the library, `toolMode: "discovery"` in
+`RuntimeOptions`.
+
+A nightly test checks real tasks against GitHub and Stripe: each one's endpoint
+must rank in the top three results.
 
 ## Authentication
 
@@ -373,6 +409,10 @@ curl -X POST localhost:4000/servers \
   -d '{"spec":"https://petstore3.swagger.io/api/v3/openapi.json","name":"Petstore"}'
 # -> { "slug":"petstore", "toolCount":19, "mcpPath":"/servers/petstore/mcp", ... }
 ```
+
+The body also takes `include` / `exclude` glob arrays and `"toolMode":
+"discovery"` (see [Discovery mode](#discovery-mode-for-large-apis)); all three
+are stored with the server.
 
 `wrangl serve --seed` boots with a curated set of popular-API servers ready to
 use (from [prebuilt/manifest.json](../prebuilt/manifest.json)). Seeding is

@@ -47,6 +47,12 @@ The [Guide](GUIDE.md#project-layout) maps every source file.
   be resolved away by URL parsing and land the request on a different
   endpoint, credentials attached. The proxy rejects such values before
   anything is sent.
+- **Large APIs don't flood the agent.** Discovery mode serves any API through
+  three tools, `search_endpoints`, `describe_endpoint`, and `call_endpoint`,
+  over the live endpoint list ([`discovery.ts`](../src/runtime/discovery.ts)).
+  `call_endpoint` reuses the endpoint tools' confirmation gate and proxy, with
+  the confirmation bound to the endpoint actually called, so the indirection
+  can't be used to skip it.
 - **Confirmations that can't be replayed.** Before a destructive tool runs,
   the agent has to confirm. The confirmation token is HMAC-signed and bound
   to a hash of the exact arguments, so it can't be reused for a different

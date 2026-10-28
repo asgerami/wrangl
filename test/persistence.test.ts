@@ -72,6 +72,20 @@ test("a server's tool filter survives a restart", async () => {
   await store2.close();
 });
 
+test("a server's discovery mode survives a restart", async () => {
+  const dbPath = join(await mkdtemp(join(tmpdir(), "wrangl-persist-")), "cp.db");
+  const store1 = SqliteServerStore.open(dbPath);
+  await new ServerRegistry({ serverStore: store1 }).create({ spec: SPEC, name: "JP", toolMode: "discovery" });
+  await store1.close();
+
+  const store2 = SqliteServerStore.open(dbPath);
+  const reg2 = new ServerRegistry({ serverStore: store2 });
+  await reg2.load();
+  assert.equal(reg2.get("jp")?.toolMode, "discovery");
+  assert.equal(reg2.list()[0].toolMode, "discovery");
+  await store2.close();
+});
+
 test("two replicas sharing a store never hand out the same slug", async () => {
   const dbPath = join(await mkdtemp(join(tmpdir(), "wrangl-persist-")), "cp.db");
   // Both replicas boot first, so neither has the other's servers in memory.

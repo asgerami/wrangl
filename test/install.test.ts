@@ -142,6 +142,12 @@ test("add records a catalog id so a bundled spec is found at launch", () => {
   assert.ok(!args.includes("--spec"), "no path into the package's install directory");
 });
 
+test("install --discovery carries the flag into the client config", () => {
+  const { args } = printedEntry("add", "jsonplaceholder", "--discovery");
+  assert.ok(args.includes("--discovery"));
+  assert.ok(!printedEntry("add", "jsonplaceholder").args.includes("--discovery"));
+});
+
 test("buildServerEntry forwards include/exclude filter flags", () => {
   const entry = buildServerEntry("https://api.test/openapi.json", {
     include: ["repos*", "issues*"],

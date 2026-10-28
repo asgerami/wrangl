@@ -66,6 +66,11 @@ export interface ToolAnnotationHints {
 export interface ToolDef {
   /** MCP tool name, unique within a server. */
   name: string;
+  /**
+   * The spec's own operationId, before `name` sanitized it. Kept because
+   * sanitizing lowercases it, so `getPetById` becomes one unsplittable word.
+   */
+  operationId?: string;
   description: string;
   /** HTTP method, uppercased. */
   method: string;
@@ -89,6 +94,12 @@ export interface ToolDef {
 }
 
 /** The product of ingestion + generation: everything the runtime needs. */
+/**
+ * How a server exposes its endpoints: one MCP tool each ("endpoints"), or three
+ * tools that search, describe, and call them ("discovery", for large APIs).
+ */
+export type ToolMode = "endpoints" | "discovery";
+
 export interface GeneratedServer {
   name: string;
   version: string;

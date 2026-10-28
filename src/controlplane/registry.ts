@@ -6,7 +6,7 @@ import { type LogStore, type LogQuery, type LogRow } from "../runtime/logstore.j
 import { loadCredentialsFromEnv, type CredentialStore } from "../runtime/auth.js";
 import { type ServerStore, type ServerRecord } from "./store.js";
 import { Vault } from "./vault.js";
-import type { GeneratedServer, ToolDef } from "../types.js";
+import type { GeneratedServer, ToolDef, ToolMode } from "../types.js";
 
 /**
  * In-process registry of generated MCP servers — the heart of the control
@@ -26,6 +26,8 @@ export interface CreateServerInput {
   /** Narrow the generated tool list (see `--include` / `--exclude`). */
   include?: string[];
   exclude?: string[];
+  /** Serve the hosted endpoint in discovery mode (see `--discovery`). */
+  toolMode?: ToolMode;
 }
 
 export interface ServerEntry {
@@ -45,6 +47,8 @@ export interface ServerEntry {
   toolFilter?: ToolFilter;
   /** Version of the stored record this entry matches (see {@link ServerRecord.updatedAt}). */
   updatedAt: number;
+  /** How the hosted endpoint exposes the tools; unset means one tool per endpoint. */
+  toolMode?: ToolMode;
 }
 
 /** Public summary of a server (no internals like the full tool list). */
@@ -57,6 +61,7 @@ export interface ServerSummary {
   status: string;
   createdAt: number;
   specHash: string;
+  toolMode: ToolMode;
 }
 
 export interface RegistryOptions {
@@ -102,6 +107,7 @@ export class ServerRegistry {
       createdAt: Date.now(),
       auth: input.auth,
       toolFilter: { include: input.include, exclude: input.exclude },
+      toolMode: input.toolMode,
     });
     if (entry.toolFilter && entry.generated.tools.length === 0) {
       throw new Error("The tool filter removed every tool. Relax include / exclude and try again.");
@@ -155,6 +161,7 @@ export class ServerRegistry {
     mcpToken?: string;
     toolFilter?: ToolFilter;
     updatedAt?: number;
+    toolMode?: ToolMode;
   }): Promise<ServerEntry> {
     const generated = await ingest(input.spec, { baseUrl: input.baseUrl });
     const toolFilter = hasToolFilter(input.toolFilter) ? input.toolFilter : undefined;
@@ -179,6 +186,7 @@ export class ServerRegistry {
       mcpToken: input.mcpToken ?? generateToken(),
       toolFilter,
       updatedAt: input.updatedAt ?? Date.now(),
+      toolMode: input.toolMode === "discovery" ? "discovery" : undefined,
     };
   }
 
@@ -193,6 +201,7 @@ export class ServerRegistry {
       mcpToken: record.mcpToken,
       toolFilter: record.toolFilter,
       updatedAt: record.updatedAt ?? 0,
+      toolMode: record.toolMode,
     });
     await this.restoreCredentials(entry); // decrypt persisted creds over env-derived
     return entry;
@@ -363,6 +372,7 @@ export function toSummary(entry: ServerEntry): ServerSummary {
     status: entry.status,
     createdAt: entry.createdAt,
     specHash: entry.specHash,
+    toolMode: entry.toolMode ?? "endpoints",
   };
 }
 
@@ -377,6 +387,7 @@ function toRecord(entry: ServerEntry): ServerRecord {
     mcpToken: entry.mcpToken,
     toolFilter: entry.toolFilter,
     updatedAt: entry.updatedAt,
+    toolMode: entry.toolMode,
   };
 }
 

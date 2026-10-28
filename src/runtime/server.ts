@@ -7,7 +7,8 @@ import {
   type RegisteredTool,
   type ServerContext,
 } from "@modelcontextprotocol/server";
-import type { GeneratedServer, ToolDef } from "../types.js";
+import { z } from "zod";
+import type { GeneratedServer, ToolAnnotationHints, ToolDef, ToolMode } from "../types.js";
 import { toolInputShape, toolOutputShape } from "../generator/schema.js";
 import { diffTools, type SpecDiff } from "../generator/diff.js";
 import {
@@ -17,6 +18,13 @@ import {
 } from "./proxy.js";
 import { type CredentialStore } from "./auth.js";
 import { confirmationCodec, digestArgs, type ConfirmationState } from "./confirmation.js";
+import {
+  DEFAULT_SEARCH_LIMIT,
+  MAX_SEARCH_LIMIT,
+  describeEndpoint,
+  formatSearch,
+  searchEndpoints,
+} from "./discovery.js";
 
 export interface RuntimeOptions {
   creds: CredentialStore;
@@ -33,6 +41,12 @@ export interface RuntimeOptions {
    * MRTR shim translates it into a real server-initiated elicitation).
    */
   confirmDestructive?: boolean | ((tool: ToolDef) => boolean);
+  /**
+   * How endpoints are exposed. "endpoints" (default): one MCP tool per
+   * endpoint. "discovery": three tools, search_endpoints, describe_endpoint,
+   * and call_endpoint, so a large API doesn't flood the agent's context.
+   */
+  toolMode?: ToolMode;
 }
 
 /** A live MCP server that can hot-reload its tools when the spec changes. */
@@ -65,9 +79,20 @@ export function createReloadableServer(
   generated: GeneratedServer,
   opts: RuntimeOptions,
 ): ReloadableServer {
+  const discovery = opts.toolMode === "discovery";
   const server = new McpServer(
     { name: generated.name, version: generated.version },
-    { requestState: { verify: confirmationCodec().verify } },
+    {
+      requestState: { verify: confirmationCodec().verify },
+      ...(discovery
+        ? {
+            instructions:
+              `This server exposes the ${generated.name} API's ${generated.tools.length} ` +
+              `endpoints through three tools: search_endpoints to find one, ` +
+              `describe_endpoint for its parameters, and call_endpoint to run it.`,
+          }
+        : {}),
+    },
   );
 
   // Mutable context so reloads can repoint baseUrl/schemes without rebuilding
@@ -82,12 +107,25 @@ export function createReloadableServer(
 
   const registered = new Map<string, RegisteredTool>();
   const byName = new Map<string, ToolDef>();
-  for (const tool of generated.tools) registerOne(server, tool, ctx, opts, registered, byName);
+  if (discovery) {
+    for (const tool of generated.tools) byName.set(tool.name, tool);
+    registerDiscovery(server, byName, ctx, opts, generated.name);
+  } else {
+    for (const tool of generated.tools) registerOne(server, tool, ctx, opts, registered, byName);
+  }
 
   function reload(next: GeneratedServer): SpecDiff {
     const diff = diffTools([...byName.values()], next.tools);
     ctx.baseUrl = next.baseUrl;
     ctx.schemes = next.securitySchemes;
+
+    // Discovery's three tools read the endpoint map on every call, so swapping
+    // its contents is the whole reload; the tool list itself never changes.
+    if (discovery) {
+      byName.clear();
+      for (const tool of next.tools) byName.set(tool.name, tool);
+      return diff;
+    }
 
     const nextByName = new Map(next.tools.map((t) => [t.name, t]));
 
@@ -155,6 +193,72 @@ async function requestConfirmation(
   });
 }
 
+/**
+ * The destructive-action gate, shared by endpoint tools and call_endpoint.
+ * Returns what to send back instead of running the call (a confirmation
+ * prompt, or a cancellation), or undefined once the call is confirmed.
+ */
+async function confirmationGate(
+  tool: ToolDef,
+  args: Record<string, unknown>,
+  mcp: ServerContext,
+  opts: RuntimeOptions,
+): Promise<CallToolResult | InputRequiredResult | undefined> {
+  if (!needsConfirmation(tool, opts)) return undefined;
+
+  const view = inputResponse(mcp.mcpReq.inputResponses, CONFIRM_KEY);
+  if (view.kind === "elicit" && view.action === "decline") {
+    return errorResult("Cancelled: user declined to confirm.");
+  }
+  if (view.kind === "elicit" && view.action === "cancel") {
+    return errorResult("Cancelled: no confirmation was provided.");
+  }
+
+  const state = mcp.mcpReq.requestState<ConfirmationState>();
+  const confirmed = view.kind === "elicit" && view.action === "accept";
+  // The requestState must match THIS exact call (spec: bind requestState
+  // to an identifier for the originating request) — otherwise a
+  // confirmation minted for one call could be replayed onto another. Through
+  // call_endpoint, `tool` is the endpoint being called, so a confirmation is
+  // bound to that endpoint, not to call_endpoint as a whole.
+  const matches = state?.tool === tool.name && state?.argsDigest === digestArgs(args);
+  return confirmed && matches ? undefined : requestConfirmation(tool, args, mcp);
+}
+
+/** Call the endpoint and shape the response for the agent. */
+async function runEndpoint(
+  tool: ToolDef,
+  args: Record<string, unknown>,
+  ctx: ProxyContext,
+  outputSchema?: z.ZodTypeAny,
+): Promise<CallToolResult> {
+  const result = await executeTool(tool, args, ctx);
+  const base: CallToolResult = {
+    // Surface HTTP errors to the agent rather than throwing, so it can
+    // adapt (retry, fix params) instead of seeing an opaque failure.
+    isError: !result.ok,
+    content: [
+      {
+        type: "text",
+        text: formatResult(result.statusCode, result.ok, result.body),
+      },
+    ],
+  };
+
+  // When the tool declares an output schema, a successful call must carry
+  // structuredContent that validates against it (the SDK enforces this).
+  // Validate here and fall back to {} — the schema is all-optional, so {}
+  // always passes — guaranteeing a divergent response can't crash the
+  // call. The full body is always available in the text content above.
+  if (outputSchema && result.ok) {
+    const parsed = outputSchema.safeParse(asObject(result.body));
+    base.structuredContent = parsed.success
+      ? (parsed.data as Record<string, unknown>)
+      : {};
+  }
+  return base;
+}
+
 function registerOne(
   server: McpServer,
   tool: ToolDef,
@@ -164,7 +268,6 @@ function registerOne(
   byName: Map<string, ToolDef>,
 ): void {
   const outputSchema = toolOutputShape(tool);
-  const confirmable = needsConfirmation(tool, opts);
 
   const handle = server.registerTool(
     tool.name,
@@ -179,56 +282,124 @@ function registerOne(
       mcp: ServerContext,
     ): Promise<CallToolResult | InputRequiredResult> => {
       const args = rawArgs ?? {};
-
-      if (confirmable) {
-        const view = inputResponse(mcp.mcpReq.inputResponses, CONFIRM_KEY);
-        if (view.kind === "elicit" && view.action === "decline") {
-          return { isError: true, content: [{ type: "text", text: "Cancelled: user declined to confirm." }] };
-        }
-        if (view.kind === "elicit" && view.action === "cancel") {
-          return { isError: true, content: [{ type: "text", text: "Cancelled: no confirmation was provided." }] };
-        }
-
-        const state = mcp.mcpReq.requestState<ConfirmationState>();
-        const confirmed = view.kind === "elicit" && view.action === "accept";
-        // The requestState must match THIS exact call (spec: bind requestState
-        // to an identifier for the originating request) — otherwise a
-        // confirmation minted for one call could be replayed onto another.
-        const matches = state?.tool === tool.name && state?.argsDigest === digestArgs(args);
-        if (!confirmed || !matches) {
-          return requestConfirmation(tool, args, mcp);
-        }
-      }
-
-      const result = await executeTool(tool, args, ctx);
-      const base: CallToolResult = {
-        // Surface HTTP errors to the agent rather than throwing, so it can
-        // adapt (retry, fix params) instead of seeing an opaque failure.
-        isError: !result.ok,
-        content: [
-          {
-            type: "text",
-            text: formatResult(result.statusCode, result.ok, result.body),
-          },
-        ],
-      };
-
-      // When the tool declares an output schema, a successful call must carry
-      // structuredContent that validates against it (the SDK enforces this).
-      // Validate here and fall back to {} — the schema is all-optional, so {}
-      // always passes — guaranteeing a divergent response can't crash the
-      // call. The full body is always available in the text content above.
-      if (outputSchema && result.ok) {
-        const parsed = outputSchema.safeParse(asObject(result.body));
-        base.structuredContent = parsed.success
-          ? (parsed.data as Record<string, unknown>)
-          : {};
-      }
-      return base;
+      return (await confirmationGate(tool, args, mcp, opts)) ?? runEndpoint(tool, args, ctx, outputSchema);
     },
   );
   registered.set(tool.name, handle);
   byName.set(tool.name, tool);
+}
+
+/** search_endpoints and describe_endpoint only read the endpoint list. */
+const LOCAL_READ_ONLY: ToolAnnotationHints = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+
+/**
+ * Register discovery mode's three tools over the live endpoint map (see
+ * discovery.ts). call_endpoint validates arguments against the endpoint's own
+ * schema, then goes through the same confirmation gate and proxy as an
+ * endpoint tool, so the indirection doesn't bypass either.
+ */
+function registerDiscovery(
+  server: McpServer,
+  byName: Map<string, ToolDef>,
+  ctx: ProxyContext,
+  opts: RuntimeOptions,
+  apiName: string,
+): void {
+  const all = () => [...byName.values()];
+  const unknown = (name: string): CallToolResult => {
+    const near = searchEndpoints(all(), name, 3).map((m) => m.tool.name);
+    return errorResult(
+      `Unknown endpoint "${name}". ` +
+        (near.length ? `Did you mean: ${near.join(", ")}?` : "Use search_endpoints to find one."),
+    );
+  };
+
+  server.registerTool(
+    "search_endpoints",
+    {
+      description:
+        `Search the ${apiName} API's endpoints by keyword, e.g. "create issue" or ` +
+        `"list invoices". Returns the best matches by name; use describe_endpoint ` +
+        `for an endpoint's parameters, then call_endpoint to run it.`,
+      inputSchema: {
+        query: z.string().min(1).describe("Words for what you want to do, or the resource involved."),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_SEARCH_LIMIT)
+          .optional()
+          .describe(`How many matches to return (default ${DEFAULT_SEARCH_LIMIT}, at most ${MAX_SEARCH_LIMIT}).`),
+      },
+      annotations: LOCAL_READ_ONLY,
+    },
+    async ({ query, limit }): Promise<CallToolResult> =>
+      textResult(formatSearch(query, searchEndpoints(all(), query, limit), byName.size)),
+  );
+
+  server.registerTool(
+    "describe_endpoint",
+    {
+      description:
+        "Get one endpoint's full description and the JSON Schema of its arguments, " +
+        "by the name search_endpoints returned.",
+      inputSchema: { name: z.string().describe("The endpoint's name, from search_endpoints.") },
+      annotations: LOCAL_READ_ONLY,
+    },
+    async ({ name }): Promise<CallToolResult> => {
+      const tool = byName.get(name);
+      return tool ? textResult(describeEndpoint(tool)) : unknown(name);
+    },
+  );
+
+  server.registerTool(
+    "call_endpoint",
+    {
+      description:
+        "Call an endpoint by name with its arguments, as describe_endpoint lists them. " +
+        "Destructive endpoints ask for confirmation before they run.",
+      inputSchema: {
+        name: z.string().describe("The endpoint's name, from search_endpoints."),
+        arguments: z
+          .record(z.string(), z.unknown())
+          .optional()
+          .describe("The endpoint's arguments, matching its input schema."),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: all().some((t) => t.annotations?.destructiveHint),
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async ({ name, arguments: args }, mcp): Promise<CallToolResult | InputRequiredResult> => {
+      const tool = byName.get(name);
+      if (!tool) return unknown(name);
+      // Endpoint tools get this validation from the SDK; here it's explicit.
+      const parsed = z.object(toolInputShape(tool)).safeParse(args ?? {});
+      if (!parsed.success) {
+        return errorResult(
+          `Invalid arguments for ${name}:\n${z.prettifyError(parsed.error)}\n\n` +
+            `describe_endpoint lists the arguments it takes.`,
+        );
+      }
+      const valid = parsed.data as Record<string, unknown>;
+      return (await confirmationGate(tool, valid, mcp, opts)) ?? runEndpoint(tool, valid, ctx);
+    },
+  );
+}
+
+function textResult(text: string): CallToolResult {
+  return { content: [{ type: "text", text }] };
+}
+
+function errorResult(text: string): CallToolResult {
+  return { isError: true, content: [{ type: "text", text }] };
 }
 
 /** Parse a response body to a plain object, or {} if it isn't one. */

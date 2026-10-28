@@ -82,6 +82,7 @@ export function buildTools(
 
       tools.push({
         name,
+        ...(op.operationId ? { operationId: op.operationId } : {}),
         description: describe(op, method, pathTemplate),
         method: method.toUpperCase(),
         pathTemplate,

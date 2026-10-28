@@ -113,11 +113,12 @@ test("an older Postgres servers table gains the newer columns on connect", { ski
     const store = await openServerStore(url.toString());
     await store.upsert({
       id: "jp", name: "JP", slug: "jp", specSource: SPEC, baseUrl: "https://x", createdAt: 1,
-      mcpToken: "tok", toolFilter: { include: ["get*"] },
+      mcpToken: "tok", toolFilter: { include: ["get*"] }, toolMode: "discovery",
     });
     const record = await store.get("jp");
     assert.equal(record?.mcpToken, "tok");
     assert.deepEqual(record?.toolFilter, { include: ["get*"] });
+    assert.equal(record?.toolMode, "discovery");
     await store.close();
   } finally {
     await admin.query(`DROP SCHEMA ${schema} CASCADE`);
