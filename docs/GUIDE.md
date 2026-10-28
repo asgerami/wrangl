@@ -102,7 +102,7 @@ wrangl generate --spec <url|file> [options]
   --include <pattern>     Only keep matching tools (glob; name/path/tag; repeatable)
   --exclude <pattern>     Drop matching tools (glob; repeatable)
   -e, --enrich            Run the LLM semantic-enrichment pass (needs ANTHROPIC_API_KEY)
-  -m, --model <id>        Claude model for enrichment (default claude-opus-4-8)
+  -m, --model <id>        Claude model for enrichment (default claude-opus-5-5)
   --effort <level>        Enrichment reasoning effort: low | medium | high (default low)
   -l, --log-db [path]     Persist tool-call logs to SQLite (default .wrangl/logs.db)
   --log-retention <days>  Days to keep usage logs, 0 = forever (default 30)
@@ -278,10 +278,16 @@ omits falls through to the deterministic original.
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 wrangl inspect  --spec examples/jsonplaceholder.yaml --enrich
-wrangl generate --spec examples/jsonplaceholder.yaml --enrich --model claude-sonnet-4-6
+wrangl generate --spec examples/jsonplaceholder.yaml --enrich --model claude-sonnet-5-5
 ```
 
-Defaults to `claude-opus-4-8`. Honors `ANTHROPIC_BASE_URL` for gateways.
+Defaults to `claude-opus-5-5`. Honors `ANTHROPIC_BASE_URL` for gateways.
+
+On Claude Opus 5.5, Opus 5, and Fable 5.1, a batch the model declines on
+safety grounds (an API for security tooling, say) is re-run on
+`claude-opus-4-8` within the same request, using the API's server-side
+fallback, and billed at that model's rates. A batch that still comes back
+unenriched is reported, and its tools keep their generated names.
 
 ## Spec auto-discovery
 

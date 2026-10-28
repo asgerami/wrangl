@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { z } from "zod";
 import type { ToolDef } from "../types.js";
 
@@ -16,7 +16,7 @@ import type { ToolDef } from "../types.js";
  */
 
 export interface EnrichOptions {
-  /** Claude model id. Defaults to claude-opus-4-8. */
+  /** Claude model id. Defaults to claude-opus-5-5. */
   model?: string;
   /** Reasoning effort. Defaults to "low" — this is a bulk rewriting task. */
   effort?: "low" | "medium" | "high";
@@ -26,9 +26,20 @@ export interface EnrichOptions {
   client?: Anthropic;
   /** Progress callback, one call per completed batch. */
   onBatch?: (done: number, total: number) => void;
+  /** Told when a batch comes back unenriched. Defaults to stderr. */
+  onWarning?: (message: string) => void;
 }
 
-const DEFAULT_MODEL = "claude-opus-4-8";
+const DEFAULT_MODEL = "claude-opus-5-5";
+
+/**
+ * Models with safety classifiers that can decline a request, and that accept a
+ * server-side fallback chain: when one refuses a batch, the API re-runs it on
+ * FALLBACK_MODEL within the same call (billed at that model's rates), so an
+ * API about, say, security tooling still gets enriched.
+ */
+const FALLBACK_CAPABLE = new Set(["claude-opus-5-5", "claude-opus-5", "claude-fable-5-1"]);
+const FALLBACK_MODEL = "claude-opus-4-8";
 const DEFAULT_EFFORT = "low" as const;
 const DEFAULT_BATCH_SIZE = 25;
 
@@ -77,6 +88,10 @@ export async function enrichTools(
   const model = options.model ?? DEFAULT_MODEL;
   const effort = options.effort ?? DEFAULT_EFFORT;
   const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
+  const warn = options.onWarning ?? ((message: string) => console.error(`⚠ ${message}`));
+  const fallback = FALLBACK_CAPABLE.has(model)
+    ? { betas: ["server-side-fallback-2026-06-01"], fallbacks: [{ model: FALLBACK_MODEL }] }
+    : {};
 
   const batches = chunk(tools, batchSize);
   const enriched: ToolDef[] = [];
@@ -85,24 +100,27 @@ export async function enrichTools(
   for (const batch of batches) {
     let result: EnrichmentBatchResult | null;
     try {
-      const response = await client.messages.parse({
+      const response = await client.beta.messages.parse({
         model,
         max_tokens: 16000,
         system: SYSTEM_PROMPT,
         output_config: {
           effort,
-          format: zodOutputFormat(EnrichmentBatch),
+          format: betaZodOutputFormat(EnrichmentBatch),
         },
         messages: [{ role: "user", content: buildBatchPrompt(batch) }],
+        ...fallback,
       });
       result = response.parsed_output;
+      if (!result) {
+        // A refusal (by every model in the chain) or a truncated response.
+        warn(
+          `Enrichment skipped ${batch.length} tools (stop reason: ${response.stop_reason}); ` +
+            `they keep their generated names and descriptions.`,
+        );
+      }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `Enrichment request failed for model "${model}". The endpoint must be ` +
-          `the Anthropic API (or a compatible gateway) with structured-output ` +
-          `support. Check ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL.\n  ${message}`,
-      );
+      throw new Error(`Enrichment request failed for model "${model}": ${explainApiError(err)}`);
     }
 
     enriched.push(...applyEnrichment(batch, result ?? { tools: [] }));
@@ -175,6 +193,28 @@ export function applyEnrichment(
 }
 
 // ---- helpers ----
+
+/**
+ * The API error's message plus the fix it most likely needs. The SDK has
+ * already retried rate limits, 5xx responses, and connection errors by the
+ * time one reaches here, so those are reported as they are.
+ */
+function explainApiError(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  if (err instanceof Anthropic.AuthenticationError || err instanceof Anthropic.PermissionDeniedError) {
+    return `${message}\n  Check ANTHROPIC_API_KEY.`;
+  }
+  if (err instanceof Anthropic.NotFoundError || err instanceof Anthropic.BadRequestError) {
+    return (
+      `${message}\n  Check the --model id. The endpoint must be the Anthropic API (or a ` +
+      `compatible gateway) with structured-output support; see ANTHROPIC_BASE_URL.`
+    );
+  }
+  if (err instanceof Anthropic.APIConnectionError) {
+    return `${message}\n  Couldn't reach the API. Check your network and ANTHROPIC_BASE_URL.`;
+  }
+  return message;
+}
 
 function sanitizeName(raw: string): string {
   return raw

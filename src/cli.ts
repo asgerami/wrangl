@@ -133,7 +133,7 @@ program
     "-e, --enrich",
     "Run the LLM semantic-enrichment pass (needs ANTHROPIC_API_KEY)",
   )
-  .option("-m, --model <id>", "Claude model for enrichment", "claude-opus-4-8")
+  .option("-m, --model <id>", "Claude model for enrichment", "claude-opus-5-5")
   .option("--effort <level>", "Enrichment reasoning effort: low | medium | high", "low")
   .option(
     "-l, --log-db [path]",
@@ -241,7 +241,7 @@ program
     "-e, --enrich",
     "Run the LLM semantic-enrichment pass (needs ANTHROPIC_API_KEY)",
   )
-  .option("-m, --model <id>", "Claude model for enrichment", "claude-opus-4-8")
+  .option("-m, --model <id>", "Claude model for enrichment", "claude-opus-5-5")
   .option("--effort <level>", "Enrichment reasoning effort: low | medium | high", "low")
   .action(async (options) => {
     try {
