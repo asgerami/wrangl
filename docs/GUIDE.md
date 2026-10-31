@@ -19,6 +19,7 @@ The complete reference. For the elevator pitch and quick start, see the
 - [Live spec sync](#live-spec-sync)
 - [Hosted control plane](#hosted-control-plane)
 - [OAuth2](#oauth2)
+- [Agent sign-in (Claude and ChatGPT connectors)](#agent-sign-in-claude-and-chatgpt-connectors)
 - [Securing a deployment](#securing-a-deployment)
 - [Deploy with Docker](#deploy-with-docker)
 - [Scaling with Postgres](#scaling-with-postgres)
@@ -125,6 +126,9 @@ wrangl serve [options]             Control-plane API + dashboard hosting many se
   -u, --public-url <url>    Public base URL for OAuth callbacks (env WRANGL_PUBLIC_URL)
   -a, --admin-token <token> Require this Bearer token on the management API (env WRANGL_ADMIN_TOKEN)
   -r, --rate-limit <perMin> Per-server req/min limit on the MCP endpoint (0 = off)
+  --oauth-issuer <url>      Let agents sign in through this identity provider (env WRANGL_OAUTH_ISSUER)
+  --oauth-scope <scope>     Scope agent tokens must carry; repeatable (env WRANGL_OAUTH_SCOPES)
+  --oauth-audience <aud>    Extra token audience accepted on every server; repeatable (env WRANGL_OAUTH_AUDIENCE)
 
 wrangl logs [options]
   -d, --db [path]         Log database path (default .wrangl/logs.db)
@@ -450,7 +454,8 @@ background, so the dashboard is up instantly.
 | `POST /servers/:id/regenerate` | Re-ingest the spec and diff the tools |
 | `POST /servers/:id/credentials` | Set a credential (`{scheme, value}`) |
 | `DELETE /servers/:id` | Remove a server |
-| `ALL /servers/:id/mcp` | Hosted MCP endpoint; requires the server's Bearer token |
+| `ALL /servers/:id/mcp` | Hosted MCP endpoint; requires the server's Bearer token or a [signed-in agent's](#agent-sign-in-claude-and-chatgpt-connectors) access token |
+| `GET /.well-known/oauth-protected-resource/servers/:id/mcp` | The server's OAuth resource metadata, with agent sign-in on |
 
 Server records persist to SQLite. On restart, `wrangl serve` rehydrates each
 server by re-ingesting its spec, so your servers survive a reboot.
@@ -485,6 +490,63 @@ GET  /servers/:id/oauth                              connection status per schem
 POST /servers/:id/oauth/:scheme/refresh              force a token refresh
 ```
 
+## Agent sign-in (Claude and ChatGPT connectors)
+
+Claude and ChatGPT add remote MCP servers as *custom connectors*, which sign
+in with OAuth instead of a static token. `--oauth-issuer` makes every hosted
+server accept that sign-in, through an identity provider you already run:
+Okta, Microsoft Entra ID, Auth0, Keycloak, or any provider that issues JWT
+access tokens. Wrangl doesn't sign anyone in itself. The provider decides who
+may connect, and Wrangl checks the tokens it issues.
+
+This is separate from [OAuth2](#oauth2) above, which is Wrangl signing in to
+the upstream API. An agent's token is checked and then dropped: upstream calls
+still use the server's stored credentials, never the agent's token.
+
+```bash
+wrangl serve --public-url https://mcp.example.com \
+  --oauth-issuer https://idp.example.com/realms/wrangl \
+  --oauth-scope mcp:tools
+```
+
+At startup Wrangl reads the provider's metadata from the issuer
+(`/.well-known/oauth-authorization-server` or
+`/.well-known/openid-configuration`) and fails if it can't find any. Then, for
+each hosted server:
+
+- `GET /.well-known/oauth-protected-resource/servers/<id>/mcp` returns its
+  [Protected Resource Metadata](https://datatracker.ietf.org/doc/html/rfc9728):
+  the resource (`https://mcp.example.com/servers/<id>/mcp`, exactly the URL
+  agents connect to) and your provider as its authorization server.
+- A request to the MCP endpoint without a valid token gets a 401 whose
+  `WWW-Authenticate` header points at that metadata. That's how a connector
+  finds out where to sign in.
+- An access token is accepted when your provider signed it, it hasn't expired,
+  and its audience (`aud`) is that server's URL. A token for one server
+  doesn't work on another. With `--oauth-scope`, it must also carry those
+  scopes (in `scope` or `scp`), or the request gets a 403 asking for them.
+- The server's static MCP token keeps working, so existing agent configs don't
+  change.
+
+**Setting up the provider.** Register an OAuth client for the connector, with
+the redirect URI the agent uses (`https://claude.ai/api/mcp/auth_callback` for
+Claude; ChatGPT shows its own when you create the connector), the
+authorization-code grant, and PKCE. Then make the provider put each server's
+URL in the token's audience. Most providers do this with an audience or API
+setting; Keycloak uses an *audience* mapper on a client scope. A provider that
+can only issue one audience for everything, such as an Auth0 API identifier or
+an Entra ID `api://` URI, works with `--oauth-audience <that value>`; tokens
+for it are then accepted on every hosted server, so scope them with
+`--oauth-scope` and the provider's own access rules.
+
+In Claude, add the connector with the server's full MCP URL and, under
+advanced settings, the client ID and secret you registered.
+
+Connectors need a public HTTPS URL, so set `--public-url` to the address they
+reach Wrangl at; `serve` warns when sign-in is on and that URL isn't HTTPS.
+Access tokens must be JWTs: providers that only issue opaque tokens aren't
+supported yet.
+
 ## Securing a deployment
 
 The control plane stores and proxies credentials, so lock it down before
@@ -504,6 +566,9 @@ exposing it beyond localhost.
   (returned by `POST /servers` and shown in the dashboard). Agents must send it
   as `Authorization: Bearer <token>` to `/servers/:id/mcp`, so knowing the URL is
   not enough to use someone's stored credentials.
+- **Agent sign-in.** `--oauth-issuer` lets agents connect with an access
+  token from your identity provider instead of the static token. See
+  [Agent sign-in](#agent-sign-in-claude-and-chatgpt-connectors).
 - **Public URL.** Behind TLS or a proxy, set `WRANGL_PUBLIC_URL` (or
   `--public-url`) so OAuth redirect URIs use your real `https://` origin.
 - **Rate limiting.** `--rate-limit <perMin>` caps requests per server on the MCP

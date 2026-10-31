@@ -48,6 +48,7 @@ import { openLogStore, retainLogs, type LogStore, type LogRow } from "./runtime/
 import { ServerRegistry } from "./controlplane/registry.js";
 import { openServerStore } from "./controlplane/store.js";
 import { Vault } from "./controlplane/vault.js";
+import { AgentAuth } from "./controlplane/agent-auth.js";
 import { OAuthManager } from "./controlplane/oauth-manager.js";
 import {
   seedRegistry,
@@ -438,6 +439,22 @@ program
     (v) => Number(v),
     0,
   )
+  .option(
+    "--oauth-issuer <url>",
+    "Let agents sign in through this identity provider, e.g. as a Claude or ChatGPT connector (env WRANGL_OAUTH_ISSUER)",
+  )
+  .option(
+    "--oauth-scope <scope>",
+    "Scope every agent token must carry; repeatable (env WRANGL_OAUTH_SCOPES, space-separated)",
+    collect,
+    [],
+  )
+  .option(
+    "--oauth-audience <aud>",
+    "Also accept tokens for this audience on every server; repeatable (env WRANGL_OAUTH_AUDIENCE)",
+    collect,
+    [],
+  )
   .action(async (options) => {
     try {
       // DB location: --log-db (path or postgres URL) > DATABASE_URL > default file.
@@ -489,11 +506,14 @@ program
       if (options.rateLimit > 0) {
         console.error(`→ rate limit: ${options.rateLimit} req/min per server`);
       }
+      const agentAuth = await agentAuthFrom(options, publicBase);
 
       const app = buildControlPlane(registry, {
         oauth,
         adminToken,
         rateLimitPerMin: options.rateLimit,
+        agentAuth,
+        publicUrl: publicBase,
         // Names this server is reached by, for the no-admin-token Host check
         // (a wildcard bind address isn't a name anyone connects with).
         allowedHosts: [new URL(publicBase).hostname, options.host].filter(
@@ -544,6 +564,38 @@ program
 program.parseAsync();
 
 // ---- helpers ----
+
+/**
+ * Agent sign-in for `serve`, from --oauth-* flags or their env vars. Looks the
+ * identity provider up now, so a wrong issuer stops startup instead of
+ * failing every connector later.
+ */
+async function agentAuthFrom(
+  options: { oauthIssuer?: string; oauthScope: string[]; oauthAudience: string[] },
+  publicBase: string,
+): Promise<AgentAuth | undefined> {
+  const issuer = options.oauthIssuer ?? process.env.WRANGL_OAUTH_ISSUER;
+  const split = (value: string | undefined) => value?.split(/[\s,]+/).filter(Boolean) ?? [];
+  const requiredScopes = options.oauthScope.length ? options.oauthScope : split(process.env.WRANGL_OAUTH_SCOPES);
+  const audiences = options.oauthAudience.length ? options.oauthAudience : split(process.env.WRANGL_OAUTH_AUDIENCE);
+  if (!issuer) {
+    if (requiredScopes.length || audiences.length) {
+      throw new Error("--oauth-scope and --oauth-audience need --oauth-issuer (or WRANGL_OAUTH_ISSUER).");
+    }
+    return undefined;
+  }
+  const agentAuth = await AgentAuth.discover({ issuer, requiredScopes, audiences });
+  console.error(`→ agent sign-in through ${agentAuth.issuer}` +
+    (requiredScopes.length ? ` (scopes: ${requiredScopes.join(" ")})` : ""));
+  const { protocol, hostname } = new URL(publicBase);
+  if (protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(hostname)) {
+    console.error(
+      `⚠ agent sign-in is on but the public URL ${publicBase} isn't HTTPS. ` +
+        "Claude and ChatGPT connectors need an HTTPS URL; set --public-url.",
+    );
+  }
+  return agentAuth;
+}
 
 function collect(value: string, previous: string[]): string[] {
   return previous.concat([value]);

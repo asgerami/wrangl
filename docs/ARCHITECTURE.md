@@ -53,6 +53,15 @@ The [Guide](GUIDE.md#project-layout) maps every source file.
   `call_endpoint` reuses the endpoint tools' confirmation gate and proxy, with
   the confirmation bound to the endpoint actually called, so the indirection
   can't be used to skip it.
+- **Agents sign in with your identity provider, not with Wrangl.** For
+  Claude and ChatGPT connectors, the control plane acts only as an OAuth
+  resource server: it publishes each hosted server's resource metadata and
+  checks provider-signed JWTs against that server's URL as audience, so a
+  token for one server can't be used on another
+  ([`agent-auth.ts`](../src/controlplane/agent-auth.ts)). Being an
+  authorization server would mean storing user accounts and client
+  registrations; the provider already does that. The agent's token is never
+  forwarded upstream.
 - **Confirmations that can't be replayed.** Before a destructive tool runs,
   the agent has to confirm. The confirmation token is HMAC-signed and bound
   to a hash of the exact arguments, so it can't be reused for a different

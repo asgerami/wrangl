@@ -30,6 +30,15 @@ While the project is pre-1.0, minor versions may include breaking changes.
   They stay searchable and are marked as direct tools in results, follow
   `--watch` reloads, and are stored per hosted server. Pins without
   discovery mode are an error; more than 20 pinned endpoints gets a warning.
+- **Agent sign-in for Claude and ChatGPT connectors.** `wrangl serve
+  --oauth-issuer <url>` lets agents connect to hosted servers with an access
+  token from your identity provider (Okta, Entra ID, Auth0, Keycloak, ...),
+  which is how Claude and ChatGPT custom connectors sign in. Each server
+  publishes OAuth Protected Resource Metadata (RFC 9728), answers a request
+  without a valid token with a 401 challenge pointing at it, and accepts only
+  JWTs signed by the provider for that server's URL. `--oauth-scope` requires
+  scopes (403 otherwise) and `--oauth-audience` accepts a shared audience.
+  The static per-server token keeps working.
 - **Official MCP Registry listing.** `server.json` describes Wrangl for
   [registry.modelcontextprotocol.io](https://registry.modelcontextprotocol.io)
   as `io.github.asgerami/wrangl`, and `package.json` carries the matching

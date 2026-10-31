@@ -83,6 +83,8 @@ error rates, and latency.
   PATCH are never retried, and upstream calls time out.
 - **Ready to deploy.** Docker image, admin auth, per-server tokens and rate
   limits, and PostgreSQL for running several replicas.
+- **Works as a Claude or ChatGPT connector.** `--oauth-issuer` lets agents
+  sign in to hosted servers through your own identity provider.
 - **Current with MCP.** Targets protocol revision `2026-07-28` and still
   serves older clients.
 - **Optional LLM pass.** `--enrich` uses Claude to turn raw names like

@@ -13,6 +13,7 @@ import { discoverSpec } from "../parser/discover.js";
 import { DASHBOARD_HTML } from "./dashboard.js";
 import { ServerRegistry, toSummary, type CreateServerInput } from "./registry.js";
 import type { OAuthManager, OAuthConfigInput } from "./oauth-manager.js";
+import type { AgentAuth } from "./agent-auth.js";
 
 /**
  * Control-plane REST API over the {@link ServerRegistry}. Manages the lifecycle
@@ -36,6 +37,14 @@ export interface ControlPlaneOptions {
    * admin token, e.g. the public URL's host. See the DNS-rebinding check.
    */
   allowedHosts?: string[];
+  /**
+   * Lets agents sign in through an identity provider, as Claude and ChatGPT
+   * custom connectors do, besides presenting the server's static MCP token.
+   * Needs {@link publicUrl}: tokens are bound to each server's public URL.
+   */
+  agentAuth?: AgentAuth;
+  /** The base URL agents reach this control plane at, e.g. `https://mcp.example.com`. */
+  publicUrl?: string;
 }
 
 export function buildControlPlane(
@@ -45,6 +54,11 @@ export function buildControlPlane(
   const app = Fastify({ logger: false });
   const oauth = opts.oauth;
   const rateLimiter = new RateLimiter(opts.rateLimitPerMin ?? 0);
+  const agentAuth = opts.agentAuth;
+  if (agentAuth && !opts.publicUrl) throw new Error("agentAuth needs publicUrl.");
+  const publicBase = (opts.publicUrl ?? "").replace(/\/+$/, "");
+  // The URL a hosted server is known by: the OAuth resource its tokens are for.
+  const resourceFor = (id: string) => new URL(`${publicBase}/servers/${encodeURIComponent(id)}/mcp`);
 
   // Per-server MCP HTTP handler for the hosted endpoint. createMcpHandler
   // serves both 2026-07-28 (per-request, stateless) and pre-2026 (session-
@@ -461,6 +475,18 @@ export function buildControlPlane(
     }
   });
 
+  // Protected Resource Metadata (RFC 9728) for each hosted server: tells a
+  // connector which identity provider to sign in with, and for which resource.
+  app.get("/.well-known/oauth-protected-resource/servers/:id/mcp", async (request, reply) => {
+    if (!agentAuth) return reply.code(404).send({ error: "Agent sign-in is not enabled." });
+    const entry = await resolveServer(idParam(request));
+    if (!entry) return notFound(reply);
+    return reply
+      .header("access-control-allow-origin", "*")
+      .header("cache-control", "max-age=3600")
+      .send(agentAuth.metadataFor(resourceFor(entry.id), entry.generated.name));
+  });
+
   // Hosted MCP endpoint (Streamable HTTP). One McpServer per session, built
   // from the server's current tools — so a regenerate reaches new sessions.
   app.all("/servers/:id/mcp", async (request, reply) => {
@@ -468,10 +494,21 @@ export function buildControlPlane(
     const entry = await resolveServer(id);
     if (!entry) return notFound(reply);
 
-    // Per-server Bearer token: this endpoint proxies calls using stored
-    // credentials, so it must not be open to anyone who knows the URL.
-    if (!safeEqual(request.headers.authorization, `Bearer ${entry.mcpToken}`)) {
-      return reply.code(401).send({ error: "Unauthorized: server MCP token required." });
+    // This endpoint proxies calls using stored credentials, so it must not be
+    // open to anyone who knows the URL. It takes the server's static token or,
+    // with agent sign-in on, an access token the identity provider issued for
+    // this server; a failed sign-in gets the challenge that starts the flow.
+    const authorization = request.headers.authorization;
+    if (!safeEqual(authorization, `Bearer ${entry.mcpToken}`)) {
+      if (!agentAuth) {
+        return reply.code(401).send({ error: "Unauthorized: server MCP token required." });
+      }
+      const resource = resourceFor(entry.id);
+      try {
+        await agentAuth.authenticate(authorization, resource);
+      } catch (err) {
+        return sendResponse(reply, agentAuth.challenge(err, resource));
+      }
     }
     // Per-server rate limit to bound cost/abuse on the public proxy.
     if (!rateLimiter.allow(id)) {
@@ -509,12 +546,19 @@ function hostnameOf(header: string | undefined): string | undefined {
   }
 }
 
-/** Routes exempt from admin auth (shell, health, OAuth callback, MCP endpoints). */
+/** Routes exempt from admin auth (shell, health, OAuth callback, MCP endpoints and their metadata). */
 function isPublicRoute(url: string): boolean {
   const path = url.split("?")[0];
   if (path === "/" || path === "/health" || path === "/oauth/callback") return true;
   // Hosted MCP endpoints have their own per-server token check.
-  return /^\/servers\/[^/]+\/mcp$/.test(path);
+  return /^(\/\.well-known\/oauth-protected-resource)?\/servers\/[^/]+\/mcp$/.test(path);
+}
+
+/** Send a fetch-style Response (as the SDK's auth helpers build them) through Fastify. */
+async function sendResponse(reply: FastifyReply, response: Response) {
+  reply.code(response.status);
+  response.headers.forEach((value, name) => reply.header(name, value));
+  return reply.send(await response.text());
 }
 
 /** Fixed-window (per-minute) per-key request limiter, in memory. */
