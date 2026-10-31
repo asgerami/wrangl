@@ -235,3 +235,69 @@ test("WRANGL_TOOL_MODE=discovery turns on discovery mode for a launcher that onl
     await client.close();
   }
 });
+
+test("pinned endpoints become direct tools next to the three, and follow reloads", async () => {
+  const api = await upstream();
+  const reloadable = createReloadableServer(gen(api.baseUrl), {
+    creds: {}, toolMode: "discovery", pin: ["getpost", "/users/*"],
+  });
+  const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+  await reloadable.server.connect(serverT);
+  const client = new Client({ name: "t", version: "1" });
+  await client.connect(clientT);
+  const names = async () => (await client.listTools()).tools.map((t) => t.name).sort();
+
+  try {
+    assert.deepEqual(await names(), ["call_endpoint", "describe_endpoint", "getpost", "getuser", "search_endpoints"]);
+    assert.match(client.getInstructions() ?? "", /2 of them are also direct tools: getpost, getuser/);
+
+    // A pinned endpoint takes its own arguments directly.
+    const direct = await client.callTool({ name: "getpost", arguments: { id: "3" } });
+    assert.match(text(direct), /^HTTP 200/);
+    assert.deepEqual(api.seen, ["GET /posts/3"]);
+
+    // Search still finds it, and says it can be called directly.
+    const found = text(await client.callTool({ name: "search_endpoints", arguments: { query: "get post" } }));
+    assert.match(found, /getpost: GET \/posts\/\{id\} \(also a direct tool\)/);
+    assert.doesNotMatch(found, /listposts: GET \/posts \(also/);
+
+    // Reload: getuser's endpoint goes away, a new /users/ endpoint matches the pin.
+    const next = ENDPOINTS.filter((t) => t.name !== "getuser").concat(endpoint("listusers", "GET", "/users/{id}/friends", "List a user's friends."));
+    reloadable.reload(gen(api.baseUrl, next));
+    assert.deepEqual(await names(), ["call_endpoint", "describe_endpoint", "getpost", "listusers", "search_endpoints"]);
+  } finally {
+    await client.close();
+    api.close();
+  }
+});
+
+test("pins mean nothing outside discovery mode, where every endpoint is already a tool", async () => {
+  const { server } = createReloadableServer(gen("http://127.0.0.1:1"), { creds: {}, pin: ["getpost"] });
+  const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverT);
+  const client = new Client({ name: "t", version: "1" });
+  await client.connect(clientT);
+  try {
+    assert.equal((await client.listTools()).tools.length, ENDPOINTS.length);
+  } finally {
+    await client.close();
+  }
+});
+
+test("WRANGL_PIN pins endpoints for a launcher that only sets env", async () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: ["--import", "tsx", join(root, "src", "cli.ts"), "generate", "--catalog", "jsonplaceholder"],
+    env: { ...(process.env as Record<string, string>), WRANGL_TOOL_MODE: "discovery", WRANGL_PIN: "getpost, getuser" },
+    stderr: "ignore",
+  });
+  const client = new Client({ name: "t", version: "1" });
+  await client.connect(transport);
+  try {
+    const names = (await client.listTools()).tools.map((t) => t.name).sort();
+    assert.deepEqual(names, ["call_endpoint", "describe_endpoint", "getpost", "getuser", "search_endpoints"]);
+  } finally {
+    await client.close();
+  }
+});

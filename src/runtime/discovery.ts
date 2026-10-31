@@ -154,8 +154,16 @@ export function summaryOf(tool: ToolDef): string {
   return first.startsWith("(HTTP ") || first === `${tool.method} ${tool.pathTemplate}` ? "" : first;
 }
 
-/** The search results as the agent reads them. */
-export function formatSearch(query: string, matches: EndpointMatch[], total: number): string {
+/**
+ * The search results as the agent reads them. Endpoints that are also pinned
+ * as direct tools say so, since the agent can then call them by name.
+ */
+export function formatSearch(
+  query: string,
+  matches: EndpointMatch[],
+  total: number,
+  isPinned: (name: string) => boolean = () => false,
+): string {
   if (matches.length === 0) {
     return (
       `No endpoints matched "${query}" (out of ${total}). Names, paths, tags, and ` +
@@ -164,7 +172,8 @@ export function formatSearch(query: string, matches: EndpointMatch[], total: num
   }
   const lines = matches.map(({ tool }) => {
     const summary = summaryOf(tool);
-    return `${tool.name}: ${tool.method} ${tool.pathTemplate}${summary ? `\n  ${summary}` : ""}`;
+    const direct = isPinned(tool.name) ? " (also a direct tool)" : "";
+    return `${tool.name}: ${tool.method} ${tool.pathTemplate}${direct}${summary ? `\n  ${summary}` : ""}`;
   });
   return (
     `${matches.length} of ${total} endpoints match "${query}":\n\n${lines.join("\n")}\n\n` +

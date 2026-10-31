@@ -11,6 +11,7 @@ import { z } from "zod";
 import type { GeneratedServer, ToolAnnotationHints, ToolDef, ToolMode } from "../types.js";
 import { toolInputShape, toolOutputShape } from "../generator/schema.js";
 import { diffTools, type SpecDiff } from "../generator/diff.js";
+import { filterTools } from "../generator/filter.js";
 import {
   executeTool,
   type ProxyContext,
@@ -47,6 +48,12 @@ export interface RuntimeOptions {
    * and call_endpoint, so a large API doesn't flood the agent's context.
    */
   toolMode?: ToolMode;
+  /**
+   * In discovery mode, endpoints matching these globs (as `--include` matches:
+   * name, path, `METHOD path`, or tag) are also registered as direct tools,
+   * so the calls an agent makes most skip the search step.
+   */
+  pin?: string[];
 }
 
 /** A live MCP server that can hot-reload its tools when the spec changes. */
@@ -80,6 +87,9 @@ export function createReloadableServer(
   opts: RuntimeOptions,
 ): ReloadableServer {
   const discovery = opts.toolMode === "discovery";
+  const pinnedOf = (tools: ToolDef[]) =>
+    discovery && opts.pin?.length ? filterTools(tools, { include: opts.pin }) : [];
+  const initiallyPinned = pinnedOf(generated.tools);
   const server = new McpServer(
     { name: generated.name, version: generated.version },
     {
@@ -89,7 +99,11 @@ export function createReloadableServer(
             instructions:
               `This server exposes the ${generated.name} API's ${generated.tools.length} ` +
               `endpoints through three tools: search_endpoints to find one, ` +
-              `describe_endpoint for its parameters, and call_endpoint to run it.`,
+              `describe_endpoint for its parameters, and call_endpoint to run it.` +
+              (initiallyPinned.length
+                ? ` ${initiallyPinned.length} of them are also direct tools: ` +
+                  `${initiallyPinned.map((t) => t.name).join(", ")}.`
+                : ""),
           }
         : {}),
     },
@@ -109,7 +123,9 @@ export function createReloadableServer(
   const byName = new Map<string, ToolDef>();
   if (discovery) {
     for (const tool of generated.tools) byName.set(tool.name, tool);
-    registerDiscovery(server, byName, ctx, opts, generated.name);
+    // In discovery mode `registered` holds just the pinned endpoints.
+    registerDiscovery(server, byName, ctx, opts, generated.name, (name) => registered.has(name));
+    for (const tool of initiallyPinned) registerOne(server, tool, ctx, opts, registered, byName);
   } else {
     for (const tool of generated.tools) registerOne(server, tool, ctx, opts, registered, byName);
   }
@@ -121,9 +137,21 @@ export function createReloadableServer(
 
     // Discovery's three tools read the endpoint map on every call, so swapping
     // its contents is the whole reload; the tool list itself never changes.
+    // Pinned endpoints are real tools, so they're re-registered as they change.
     if (discovery) {
+      const pinDiff = diffTools(
+        [...byName.values()].filter((t) => registered.has(t.name)),
+        pinnedOf(next.tools),
+      );
+      for (const name of [...pinDiff.removed, ...pinDiff.changed.map((c) => c.name)]) {
+        registered.get(name)?.remove();
+        registered.delete(name);
+      }
       byName.clear();
       for (const tool of next.tools) byName.set(tool.name, tool);
+      for (const name of [...pinDiff.added, ...pinDiff.changed.map((c) => c.name)]) {
+        registerOne(server, byName.get(name)!, ctx, opts, registered, byName);
+      }
       return diff;
     }
 
@@ -309,6 +337,7 @@ function registerDiscovery(
   ctx: ProxyContext,
   opts: RuntimeOptions,
   apiName: string,
+  isPinned: (name: string) => boolean,
 ): void {
   const all = () => [...byName.values()];
   const unknown = (name: string): CallToolResult => {
@@ -339,7 +368,7 @@ function registerDiscovery(
       annotations: LOCAL_READ_ONLY,
     },
     async ({ query, limit }): Promise<CallToolResult> =>
-      textResult(formatSearch(query, searchEndpoints(all(), query, limit), byName.size)),
+      textResult(formatSearch(query, searchEndpoints(all(), query, limit), byName.size, isPinned)),
   );
 
   server.registerTool(

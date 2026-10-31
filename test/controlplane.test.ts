@@ -84,6 +84,20 @@ test("a hosted server can be served in discovery mode", async () => {
   await a.close();
 });
 
+test("hosted discovery servers can pin endpoints as direct tools", async () => {
+  const { app: a, registry } = app();
+  const noDiscovery = await createServer(a, { spec: SPEC, pin: ["getpost"] });
+  assert.equal(noDiscovery.statusCode, 400);
+  assert.match(noDiscovery.json().error, /only applies with/);
+  assert.equal((await createServer(a, { spec: SPEC, toolMode: "discovery", pin: "getpost" })).statusCode, 400);
+
+  const res = await createServer(a, { spec: SPEC, name: "JP", toolMode: "discovery", pin: ["getpost"] });
+  assert.equal(res.statusCode, 201);
+  assert.deepEqual(res.json().pin, ["getpost"]);
+  assert.deepEqual(registry.get("jp")?.pin, ["getpost"]);
+  await a.close();
+});
+
 test("POST /servers without a spec is a 400", async () => {
   const { app: a } = app();
   const res = await createServer(a, { name: "x" });

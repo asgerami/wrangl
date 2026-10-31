@@ -28,6 +28,8 @@ export interface CreateServerInput {
   exclude?: string[];
   /** Serve the hosted endpoint in discovery mode (see `--discovery`). */
   toolMode?: ToolMode;
+  /** In discovery mode, globs for endpoints also exposed as direct tools (see `--pin`). */
+  pin?: string[];
 }
 
 export interface ServerEntry {
@@ -49,6 +51,8 @@ export interface ServerEntry {
   updatedAt: number;
   /** How the hosted endpoint exposes the tools; unset means one tool per endpoint. */
   toolMode?: ToolMode;
+  /** In discovery mode, globs for endpoints also exposed as direct tools. */
+  pin?: string[];
 }
 
 /** Public summary of a server (no internals like the full tool list). */
@@ -62,6 +66,7 @@ export interface ServerSummary {
   createdAt: number;
   specHash: string;
   toolMode: ToolMode;
+  pin: string[];
 }
 
 export interface RegistryOptions {
@@ -108,6 +113,7 @@ export class ServerRegistry {
       auth: input.auth,
       toolFilter: { include: input.include, exclude: input.exclude },
       toolMode: input.toolMode,
+      pin: input.pin,
     });
     if (entry.toolFilter && entry.generated.tools.length === 0) {
       throw new Error("The tool filter removed every tool. Relax include / exclude and try again.");
@@ -162,6 +168,7 @@ export class ServerRegistry {
     toolFilter?: ToolFilter;
     updatedAt?: number;
     toolMode?: ToolMode;
+    pin?: string[];
   }): Promise<ServerEntry> {
     const generated = await ingest(input.spec, { baseUrl: input.baseUrl });
     const toolFilter = hasToolFilter(input.toolFilter) ? input.toolFilter : undefined;
@@ -187,6 +194,7 @@ export class ServerRegistry {
       toolFilter,
       updatedAt: input.updatedAt ?? Date.now(),
       toolMode: input.toolMode === "discovery" ? "discovery" : undefined,
+      pin: input.toolMode === "discovery" && input.pin?.length ? input.pin : undefined,
     };
   }
 
@@ -202,6 +210,7 @@ export class ServerRegistry {
       toolFilter: record.toolFilter,
       updatedAt: record.updatedAt ?? 0,
       toolMode: record.toolMode,
+      pin: record.pin,
     });
     await this.restoreCredentials(entry); // decrypt persisted creds over env-derived
     return entry;
@@ -373,6 +382,7 @@ export function toSummary(entry: ServerEntry): ServerSummary {
     createdAt: entry.createdAt,
     specHash: entry.specHash,
     toolMode: entry.toolMode ?? "endpoints",
+    pin: entry.pin ?? [],
   };
 }
 
@@ -388,6 +398,7 @@ function toRecord(entry: ServerEntry): ServerRecord {
     toolFilter: entry.toolFilter,
     updatedAt: entry.updatedAt,
     toolMode: entry.toolMode,
+    pin: entry.pin,
   };
 }
 

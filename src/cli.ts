@@ -137,6 +137,12 @@ program
     "Expose 3 tools that search, describe, and call the endpoints, instead of one tool each (for large APIs; env WRANGL_TOOL_MODE=discovery)",
   )
   .option(
+    "--pin <pattern>",
+    "In discovery mode, also expose endpoints matching this glob as direct tools (repeatable; env WRANGL_PIN, comma-separated)",
+    collect,
+    [],
+  )
+  .option(
     "-e, --enrich",
     "Run the LLM semantic-enrichment pass (needs ANTHROPIC_API_KEY)",
   )
@@ -164,6 +170,7 @@ program
       const creds = resolveCredentials(active, options.auth);
       warnMissingCreds(active, creds);
       const toolMode = resolveToolMode(options.discovery);
+      const pin = resolvePins(options.pin, toolMode, active);
       if (toolMode === "discovery") {
         console.error(`→ discovery mode: 3 tools over ${active.tools.length} endpoints`);
       }
@@ -200,7 +207,7 @@ program
 
       if (options.transport === "http") {
         const port = Number(options.port);
-        await serveHttp(() => createMcpServer(active, { creds, onLog, toolMode }), { port });
+        await serveHttp(() => createMcpServer(active, { creds, onLog, toolMode, pin }), { port });
         console.error(
           `\nMCP server live at http://127.0.0.1:${port}/mcp ` +
             `(Streamable HTTP)\nPress Ctrl+C to stop.`,
@@ -213,7 +220,7 @@ program
           if (hasChanges(diff)) console.error(`\n↻ spec changed:\n${formatDiff(diff)}`);
         });
       } else {
-        const reloadable = createReloadableServer(active, { creds, onLog, toolMode });
+        const reloadable = createReloadableServer(active, { creds, onLog, toolMode, pin });
         console.error("\nMCP server live on stdio. Connect an agent client.");
         startWatch((next) => {
           applyToolFilter(next, options);
@@ -341,6 +348,12 @@ const installOptions = (cmd: Command): Command =>
       [],
     )
     .option("--discovery", "Expose 3 tools that search, describe, and call the endpoints, instead of one tool each (for large APIs)")
+    .option(
+      "--pin <pattern>",
+      "With --discovery, also expose endpoints matching this glob as direct tools (repeatable)",
+      collect,
+      [],
+    )
     .option(
       "--env <KEY=value>",
       "Set an environment variable for the server, e.g. its API key (repeatable)",
@@ -548,6 +561,30 @@ function resolveToolMode(flag: boolean | undefined): ToolMode {
   throw new Error(`WRANGL_TOOL_MODE must be "endpoints" or "discovery" (got "${env}").`);
 }
 
+/** Above this many pinned endpoints, discovery mode stops saving much context. */
+const PIN_WARN_ABOVE = 20;
+
+/**
+ * Pin patterns from --pin, or WRANGL_PIN (comma-separated). Pins only mean
+ * something in discovery mode, so they're an error without it; a pattern set
+ * that pins most of the API defeats the point, so that gets a warning.
+ */
+function resolvePins(flags: string[], toolMode: ToolMode, generated: GeneratedServer): string[] {
+  const pins = flags.length
+    ? flags
+    : (process.env.WRANGL_PIN ?? "").split(",").map((p) => p.trim()).filter(Boolean);
+  if (!pins.length) return [];
+  if (toolMode !== "discovery") {
+    throw new Error("--pin only applies in discovery mode (--discovery): without it, every endpoint is already a tool.");
+  }
+  const pinned = filterTools(generated.tools, { include: pins });
+  console.error(`→ pinned ${pinned.length} endpoint(s) as direct tools: ${pinned.map((t) => t.name).join(", ") || "none matched"}`);
+  if (pinned.length > PIN_WARN_ABOVE) {
+    console.error(`⚠ ${pinned.length} pinned endpoints is a lot; narrow the pattern to keep discovery mode's tool list short.`);
+  }
+  return pins;
+}
+
 /** Parse repeatable `--env KEY=value` flags; undefined when none were given. */
 function parseEnvFlags(flags: string[] = []): Record<string, string> | undefined {
   if (!flags.length) return undefined;
@@ -579,6 +616,7 @@ async function runInstall(
     exclude?: string[];
     env?: string[];
     discovery?: boolean;
+    pin?: string[];
   },
 ): Promise<void> {
   const clientName = options.client ?? "claude";
@@ -589,6 +627,9 @@ async function runInstall(
   }
   const client: ClientName = clientName;
   const env = parseEnvFlags(options.env);
+  if (options.pin?.length && !options.discovery) {
+    throw new Error("--pin only applies with --discovery: without it, every endpoint is already a tool.");
+  }
 
   const { spec, catalog } = await resolveApiTarget(api);
   console.error(`→ reading ${spec}…`);
@@ -608,6 +649,7 @@ async function runInstall(
     include: options.include,
     exclude: options.exclude,
     discovery: options.discovery,
+    pin: options.pin,
   });
   if (env) entry.env = env;
   console.error(`→ generated ${generated.tools.length} tools from ${generated.name}`);

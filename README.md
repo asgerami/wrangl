@@ -72,7 +72,8 @@ error rates, and latency.
   when it's only linked from a docs page.
 - **Discovery mode for large APIs.** `--discovery` exposes three tools that
   search, describe, and call the endpoints instead of one tool each, so
-  GitHub's 1,254 endpoints cost an agent three tool definitions.
+  GitHub's 1,254 endpoints cost an agent three tool definitions. `--pin`
+  keeps the calls you use most as direct tools too.
 - **Real-world specs.** OpenAPI 3.x and Postman collections, including
   recursive schemas. `--include` and `--exclude` trim huge APIs down to the
   tools an agent needs.

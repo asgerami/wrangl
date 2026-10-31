@@ -24,6 +24,8 @@ export interface ServerRecord {
   toolFilter?: ToolFilter;
   /** How the hosted endpoint exposes the tools; unset means one tool per endpoint. */
   toolMode?: ToolMode;
+  /** In discovery mode, globs for endpoints also exposed as direct tools. */
+  pin?: string[];
   /**
    * Version of the record, raised on every write. Replicas compare it with
    * their cached copy to notice changes made elsewhere.
@@ -86,6 +88,7 @@ interface Row {
   tool_filter: string | null;
   updated_at: number | null;
   tool_mode: string | null;
+  tool_pins: string | null;
 }
 
 const SCHEMA = `
@@ -99,7 +102,8 @@ const SCHEMA = `
     mcp_token   TEXT,
     tool_filter TEXT,
     updated_at  INTEGER,
-    tool_mode   TEXT
+    tool_mode   TEXT,
+    tool_pins   TEXT
   );
   CREATE TABLE IF NOT EXISTS credentials (
     server_id   TEXT NOT NULL,
@@ -134,7 +138,7 @@ export class SqliteServerStore implements ServerStore {
     db.exec(SCHEMA);
     // Migrate databases created before these columns existed.
     const cols = db.prepare("PRAGMA table_info(servers)").all() as Array<{ name: string }>;
-    const added = { mcp_token: "TEXT", tool_filter: "TEXT", updated_at: "INTEGER", tool_mode: "TEXT" };
+    const added = { mcp_token: "TEXT", tool_filter: "TEXT", updated_at: "INTEGER", tool_mode: "TEXT", tool_pins: "TEXT" };
     for (const [column, type] of Object.entries(added)) {
       if (!cols.some((c) => c.name === column)) {
         db.exec(`ALTER TABLE servers ADD COLUMN ${column} ${type}`);
@@ -147,8 +151,8 @@ export class SqliteServerStore implements ServerStore {
     this.db
       .prepare(
         `INSERT INTO servers
-           (id, name, slug, spec_source, base_url, created_at, mcp_token, tool_filter, updated_at, tool_mode)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           (id, name, slug, spec_source, base_url, created_at, mcp_token, tool_filter, updated_at, tool_mode, tool_pins)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name,
            slug = excluded.slug,
@@ -157,7 +161,8 @@ export class SqliteServerStore implements ServerStore {
            mcp_token = excluded.mcp_token,
            tool_filter = excluded.tool_filter,
            updated_at = excluded.updated_at,
-           tool_mode = excluded.tool_mode`,
+           tool_mode = excluded.tool_mode,
+           tool_pins = excluded.tool_pins`,
       )
       .run(
         record.id,
@@ -170,6 +175,7 @@ export class SqliteServerStore implements ServerStore {
         encodeToolFilter(record.toolFilter),
         record.updatedAt ?? null,
         record.toolMode ?? null,
+        encodePins(record.pin),
       );
   }
 
@@ -263,7 +269,16 @@ function fromRow(row: Row): ServerRecord {
     toolFilter: decodeToolFilter(row.tool_filter),
     updatedAt: row.updated_at ?? undefined,
     toolMode: decodeToolMode(row.tool_mode),
+    pin: decodePins(row.tool_pins),
   };
+}
+
+export function encodePins(pin: string[] | undefined): string | null {
+  return pin?.length ? JSON.stringify(pin) : null;
+}
+
+export function decodePins(json: string | null): string[] | undefined {
+  return json ? (JSON.parse(json) as string[]) : undefined;
 }
 
 export function decodeToolMode(value: string | null): ToolMode | undefined {

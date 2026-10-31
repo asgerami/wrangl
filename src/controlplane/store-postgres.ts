@@ -2,6 +2,8 @@ import pg from "pg";
 import {
   decodeToolFilter,
   decodeToolMode,
+  decodePins,
+  encodePins,
   encodeToolFilter,
   type PendingAuthRow,
   type ServerRecord,
@@ -25,7 +27,8 @@ const SCHEMA = `
     mcp_token   TEXT,
     tool_filter TEXT,
     updated_at  BIGINT,
-    tool_mode   TEXT
+    tool_mode   TEXT,
+    tool_pins   TEXT
   );
   -- CREATE TABLE IF NOT EXISTS leaves an older table as it was; add any
   -- columns that arrived after it was created.
@@ -33,6 +36,7 @@ const SCHEMA = `
   ALTER TABLE servers ADD COLUMN IF NOT EXISTS tool_filter TEXT;
   ALTER TABLE servers ADD COLUMN IF NOT EXISTS updated_at BIGINT;
   ALTER TABLE servers ADD COLUMN IF NOT EXISTS tool_mode TEXT;
+  ALTER TABLE servers ADD COLUMN IF NOT EXISTS tool_pins TEXT;
   CREATE TABLE IF NOT EXISTS credentials (
     server_id   TEXT NOT NULL,
     scheme      TEXT NOT NULL,
@@ -63,6 +67,7 @@ interface Row {
   tool_filter: string | null;
   updated_at: string | number | null;
   tool_mode: string | null;
+  tool_pins: string | null;
 }
 
 export class PostgresServerStore implements ServerStore {
@@ -77,13 +82,14 @@ export class PostgresServerStore implements ServerStore {
   async upsert(r: ServerRecord): Promise<void> {
     await this.pool.query(
       `INSERT INTO servers
-         (id, name, slug, spec_source, base_url, created_at, mcp_token, tool_filter, updated_at, tool_mode)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         (id, name, slug, spec_source, base_url, created_at, mcp_token, tool_filter, updated_at, tool_mode, tool_pins)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name, slug = EXCLUDED.slug,
          spec_source = EXCLUDED.spec_source, base_url = EXCLUDED.base_url,
          mcp_token = EXCLUDED.mcp_token, tool_filter = EXCLUDED.tool_filter,
-         updated_at = EXCLUDED.updated_at, tool_mode = EXCLUDED.tool_mode`,
+         updated_at = EXCLUDED.updated_at, tool_mode = EXCLUDED.tool_mode,
+         tool_pins = EXCLUDED.tool_pins`,
       [
         r.id,
         r.name,
@@ -95,6 +101,7 @@ export class PostgresServerStore implements ServerStore {
         encodeToolFilter(r.toolFilter),
         r.updatedAt ?? null,
         r.toolMode ?? null,
+        encodePins(r.pin),
       ],
     );
   }
@@ -188,5 +195,6 @@ function fromRow(row: Row): ServerRecord {
     toolFilter: decodeToolFilter(row.tool_filter),
     updatedAt: row.updated_at === null ? undefined : Number(row.updated_at),
     toolMode: decodeToolMode(row.tool_mode),
+    pin: decodePins(row.tool_pins),
   };
 }

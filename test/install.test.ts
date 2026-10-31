@@ -148,6 +148,22 @@ test("install --discovery carries the flag into the client config", () => {
   assert.ok(!printedEntry("add", "jsonplaceholder").args.includes("--discovery"));
 });
 
+test("--pin is forwarded with --discovery, and refused without it", () => {
+  const { args } = printedEntry("add", "jsonplaceholder", "--discovery", "--pin", "getpost");
+  assert.equal(args[args.indexOf("--pin") + 1], "getpost");
+  assert.throws(
+    () => printedEntry("add", "jsonplaceholder", "--pin", "getpost"),
+    (err: { stderr?: string }) => /--pin only applies with --discovery/.test(err.stderr ?? ""),
+  );
+  assert.throws(
+    () =>
+      execFileSync(process.execPath, ["--import", "tsx", join(root, "src", "cli.ts"), "generate", "--catalog", "jsonplaceholder", "--pin", "getpost"], {
+        cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+      }),
+    (err: { stderr?: string }) => /--pin only applies in discovery mode/.test(err.stderr ?? ""),
+  );
+});
+
 test("buildServerEntry forwards include/exclude filter flags", () => {
   const entry = buildServerEntry("https://api.test/openapi.json", {
     include: ["repos*", "issues*"],

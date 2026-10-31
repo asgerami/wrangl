@@ -88,6 +88,7 @@ wrangl install <api> [options]     Discover, generate, and wire into your agent 
   --exclude <pattern>     Drop matching tools (glob; repeatable)
   --env <KEY=value>       Set an env var for the server, e.g. its API key (repeatable)
   --discovery             Serve through 3 search/describe/call tools (large APIs)
+  --pin <pattern>         With --discovery, also expose matching endpoints as tools
   --print                 Print the config block instead of writing it
 
 wrangl add <id>                    Install a ready-made server from the catalog
@@ -98,6 +99,7 @@ wrangl generate --spec <url|file> [options]
   -d, --discover <url>    Auto-discover the spec by probing a base URL
   --catalog <id>          Use a ready-made spec from the catalog
   --discovery             Expose 3 tools that search, describe, and call endpoints
+  --pin <pattern>         In discovery mode, also expose matches as direct tools
   -b, --base-url <url>    Upstream base URL (overrides the spec's servers)
   -t, --transport <type>  stdio | http (default stdio)
   -p, --port <number>     Port for the http transport (default 3000)
@@ -220,7 +222,21 @@ wrangl generate --spec api.yaml --discovery
 
 `install` and `add` suggest it for APIs with more than 50 tools. Launchers
 that set environment variables rather than flags (Docker, the MCP Registry)
-can use `WRANGL_TOOL_MODE=discovery` instead of `--discovery`. It combines
+can use `WRANGL_TOOL_MODE=discovery` instead of `--discovery`.
+
+To skip the search step for the calls an agent makes most, pin them:
+`--pin <glob>` (repeatable, matched like `--include`) also exposes matching
+endpoints as direct tools, next to the three. They stay searchable, and
+search results mark them as direct tools.
+
+```bash
+wrangl add github --discovery --pin issues_create --pin pulls_list
+```
+
+Pins only apply in discovery mode, so `--pin` without it is an error, and
+more than 20 pinned endpoints gets a warning, since that starts to undo the
+point. `WRANGL_PIN` takes comma-separated globs; on the control plane it's a
+`"pin": [...]` array next to `"toolMode": "discovery"`. It combines
 with `--include` / `--exclude`, which then narrow what search can find. On the
 hosted control plane, pass `"toolMode": "discovery"` to `POST /servers` (or tick
 the box in the dashboard); in the library, `toolMode: "discovery"` in

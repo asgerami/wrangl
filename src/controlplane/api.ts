@@ -63,6 +63,7 @@ export function buildControlPlane(
         onLog: (e) => registry.recordLog(id, e),
         onUnauthorized: oauthRefresher(id),
         toolMode: entry.toolMode,
+        pin: entry.pin,
       });
     };
     const handler = createMcpHandler(factory, {
@@ -150,7 +151,10 @@ export function buildControlPlane(
     if (body.toolMode !== undefined && body.toolMode !== "endpoints" && body.toolMode !== "discovery") {
       return reply.code(400).send({ error: '`toolMode` must be "endpoints" or "discovery".' });
     }
-    for (const key of ["include", "exclude"] as const) {
+    if (body.pin !== undefined && body.toolMode !== "discovery") {
+      return reply.code(400).send({ error: '`pin` only applies with `"toolMode": "discovery"`.' });
+    }
+    for (const key of ["include", "exclude", "pin"] as const) {
       const patterns = body[key];
       if (patterns !== undefined && !(Array.isArray(patterns) && patterns.every((p) => typeof p === "string"))) {
         return reply.code(400).send({ error: `\`${key}\` must be an array of glob patterns.` });
@@ -175,6 +179,7 @@ export function buildControlPlane(
         include: body.include,
         exclude: body.exclude,
         toolMode: body.toolMode,
+        pin: body.pin,
       });
       return reply.code(201).send({
         ...toSummary(entry),

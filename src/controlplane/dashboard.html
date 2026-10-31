@@ -163,6 +163,10 @@
           <input id="f-discovery" type="checkbox" />
           Discovery mode: 3 tools that search and call the endpoints (for large APIs)
         </label>
+        <div>
+          <label for="f-pin">Pinned endpoints, with discovery mode (optional)</label>
+          <input id="f-pin" placeholder="issues*, GET /repos/*" />
+        </div>
         <button type="submit" class="primary" id="create-btn">Create server</button>
       </form>
     </div>
@@ -598,6 +602,8 @@ $("#create-form").addEventListener("submit", async (e) => {
     if ($("#f-name").value.trim()) payload.name = $("#f-name").value.trim();
     if ($("#f-base").value.trim()) payload.baseUrl = $("#f-base").value.trim();
     if ($("#f-discovery").checked) payload.toolMode = "discovery";
+    const pins = $("#f-pin").value.split(",").map((p) => p.trim()).filter(Boolean);
+    if (pins.length) payload.pin = pins;
     const created = await api("/servers", {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
     });

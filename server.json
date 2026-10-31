@@ -48,6 +48,10 @@
           ]
         },
         {
+          "name": "WRANGL_PIN",
+          "description": "With discovery mode, comma-separated globs for endpoints to also expose as direct tools, e.g. \"issues_create,pulls_list\""
+        },
+        {
           "name": "WRANGL_BEARER_TOKEN",
           "description": "Token for APIs that use bearer authentication",
           "isSecret": true

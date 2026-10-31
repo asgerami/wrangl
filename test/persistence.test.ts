@@ -75,7 +75,7 @@ test("a server's tool filter survives a restart", async () => {
 test("a server's discovery mode survives a restart", async () => {
   const dbPath = join(await mkdtemp(join(tmpdir(), "wrangl-persist-")), "cp.db");
   const store1 = SqliteServerStore.open(dbPath);
-  await new ServerRegistry({ serverStore: store1 }).create({ spec: SPEC, name: "JP", toolMode: "discovery" });
+  await new ServerRegistry({ serverStore: store1 }).create({ spec: SPEC, name: "JP", toolMode: "discovery", pin: ["getpost"] });
   await store1.close();
 
   const store2 = SqliteServerStore.open(dbPath);
@@ -83,6 +83,7 @@ test("a server's discovery mode survives a restart", async () => {
   await reg2.load();
   assert.equal(reg2.get("jp")?.toolMode, "discovery");
   assert.equal(reg2.list()[0].toolMode, "discovery");
+  assert.deepEqual(reg2.get("jp")?.pin, ["getpost"]);
   await store2.close();
 });
 
