@@ -48,3 +48,24 @@ jobs:
         run: npm install -g npm@^11.5.1 && npm --version
       - run: npm publish --access public
         if: steps.check.outputs.published == 'false'
+      # List the release in the official MCP Registry. It logs in with GitHub
+      # OIDC (no stored token) and verifies package.json's mcpName in the
+      # version just published, so it waits for npm to serve that version.
+      # The registry is in preview: a failure here is reported, not fatal,
+      # since the npm release has already succeeded.
+      - name: Publish to the MCP Registry
+        if: steps.check.outputs.published == 'false'
+        continue-on-error: true
+        run: |
+          curl -sSL -o mcp-publisher.tar.gz \
+            https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz
+          echo "a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc  mcp-publisher.tar.gz" | sha256sum -c -
+          tar xzf mcp-publisher.tar.gz mcp-publisher
+          version=$(node -p "require('./package.json').version")
+          for i in $(seq 1 40); do
+            npm view "@asgerami/wrangl@$version" mcpName --registry https://registry.npmjs.org 2>/dev/null | grep -q . && break
+            sleep 15
+          done
+          ./mcp-publisher validate
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish

@@ -218,3 +218,20 @@ test("`generate --discovery` serves the three tools over stdio, as an agent clie
     await client.close();
   }
 });
+
+test("WRANGL_TOOL_MODE=discovery turns on discovery mode for a launcher that only sets env", async () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: ["--import", "tsx", join(root, "src", "cli.ts"), "generate", "--catalog", "jsonplaceholder"],
+    env: { ...(process.env as Record<string, string>), WRANGL_TOOL_MODE: "discovery" },
+    stderr: "ignore",
+  });
+  const client = new Client({ name: "t", version: "1" });
+  await client.connect(transport);
+  try {
+    assert.equal((await client.listTools()).tools.length, 3);
+  } finally {
+    await client.close();
+  }
+});

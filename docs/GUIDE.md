@@ -218,7 +218,9 @@ wrangl add github --discovery                  # 3 tools over 1,254 endpoints
 wrangl generate --spec api.yaml --discovery
 ```
 
-`install` and `add` suggest it for APIs with more than 50 tools. It combines
+`install` and `add` suggest it for APIs with more than 50 tools. Launchers
+that set environment variables rather than flags (Docker, the MCP Registry)
+can use `WRANGL_TOOL_MODE=discovery` instead of `--discovery`. It combines
 with `--include` / `--exclude`, which then narrow what search can find. On the
 hosted control plane, pass `"toolMode": "discovery"` to `POST /servers` (or tick
 the box in the dashboard); in the library, `toolMode: "discovery"` in

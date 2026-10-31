@@ -21,7 +21,13 @@ While the project is pre-1.0, minor versions may include breaking changes.
   called. GitHub's 1,254 endpoints become three tool definitions. `install`
   suggests it for APIs with more than 50 tools, and the setting is stored
   per hosted server. A nightly test checks that real GitHub and Stripe tasks
-  find their endpoint in the top three results.
+  find their endpoint in the top three results. `WRANGL_TOOL_MODE=discovery`
+  turns it on where only environment variables can be set.
+- **Official MCP Registry listing.** `server.json` describes Wrangl for
+  [registry.modelcontextprotocol.io](https://registry.modelcontextprotocol.io)
+  as `io.github.asgerami/wrangl`, and `package.json` carries the matching
+  `mcpName` the registry verifies. Releases publish the listing automatically
+  via GitHub OIDC, and `npm version` keeps its version in step.
 
 ## [0.5.0] - 2026-10-28
 

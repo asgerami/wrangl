@@ -74,9 +74,20 @@ workflow runs the network tests against the live APIs.
 ## Releases
 
 Releases are published to npm with provenance by GitHub Actions when a
-`v*` version tag is pushed. Maintainers bump the version in `package.json`,
+`v*` version tag is pushed. Maintainers bump the version with
+`npm version <x.y.z> --no-git-tag-version` (which also updates `server.json`),
 move the `[Unreleased]` changelog entries under the new version, and push
 the tag.
+
+The same workflow then lists the release in the official
+[MCP Registry](https://registry.modelcontextprotocol.io) from `server.json`,
+logging in with GitHub OIDC. The registry is in preview, so that step can't
+fail the release; if it does fail, publish by hand from the tagged commit:
+
+```bash
+mcp-publisher login github
+mcp-publisher publish
+```
 
 By contributing, you agree that your contributions are licensed under the
 [MIT License](LICENSE).

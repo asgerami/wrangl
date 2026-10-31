@@ -1,0 +1,68 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.asgerami/wrangl",
+  "title": "Wrangl",
+  "description": "Turn any REST API into MCP tools, from an OpenAPI spec, a Postman collection, or a base URL.",
+  "websiteUrl": "https://github.com/asgerami/wrangl#readme",
+  "repository": {
+    "url": "https://github.com/asgerami/wrangl",
+    "source": "github"
+  },
+  "version": "0.5.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@asgerami/wrangl",
+      "version": "0.5.0",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "generate"
+        },
+        {
+          "type": "named",
+          "name": "--spec",
+          "description": "OpenAPI 3.x spec or Postman collection to serve: a URL or a file path",
+          "isRequired": true,
+          "placeholder": "https://petstore3.swagger.io/api/v3/openapi.json"
+        },
+        {
+          "type": "named",
+          "name": "--base-url",
+          "description": "Upstream API base URL, when the spec has none or you need a different one"
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "WRANGL_TOOL_MODE",
+          "description": "\"discovery\" serves the API through 3 tools that search, describe, and call its endpoints (best for large APIs); \"endpoints\" gives one tool per endpoint",
+          "default": "endpoints",
+          "choices": [
+            "endpoints",
+            "discovery"
+          ]
+        },
+        {
+          "name": "WRANGL_BEARER_TOKEN",
+          "description": "Token for APIs that use bearer authentication",
+          "isSecret": true
+        },
+        {
+          "name": "WRANGL_API_KEY",
+          "description": "Key for APIs that use an API key",
+          "isSecret": true
+        },
+        {
+          "name": "WRANGL_BASIC_AUTH",
+          "description": "user:password for APIs that use HTTP Basic authentication",
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

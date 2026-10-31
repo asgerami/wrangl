@@ -132,7 +132,10 @@ program
     collect,
     [],
   )
-  .option("--discovery", "Expose 3 tools that search, describe, and call the endpoints, instead of one tool each (for large APIs)")
+  .option(
+    "--discovery",
+    "Expose 3 tools that search, describe, and call the endpoints, instead of one tool each (for large APIs; env WRANGL_TOOL_MODE=discovery)",
+  )
   .option(
     "-e, --enrich",
     "Run the LLM semantic-enrichment pass (needs ANTHROPIC_API_KEY)",
@@ -160,8 +163,8 @@ program
 
       const creds = resolveCredentials(active, options.auth);
       warnMissingCreds(active, creds);
-      const toolMode: ToolMode = options.discovery ? "discovery" : "endpoints";
-      if (options.discovery) {
+      const toolMode = resolveToolMode(options.discovery);
+      if (toolMode === "discovery") {
         console.error(`→ discovery mode: 3 tools over ${active.tools.length} endpoints`);
       }
 
@@ -531,6 +534,18 @@ program.parseAsync();
 
 function collect(value: string, previous: string[]): string[] {
   return previous.concat([value]);
+}
+
+/**
+ * Discovery mode from --discovery, or WRANGL_TOOL_MODE for launchers that set
+ * environment variables rather than flags (the MCP Registry, Docker).
+ */
+function resolveToolMode(flag: boolean | undefined): ToolMode {
+  if (flag) return "discovery";
+  const env = process.env.WRANGL_TOOL_MODE;
+  if (env === undefined || env === "" || env === "endpoints") return "endpoints";
+  if (env === "discovery") return "discovery";
+  throw new Error(`WRANGL_TOOL_MODE must be "endpoints" or "discovery" (got "${env}").`);
 }
 
 /** Parse repeatable `--env KEY=value` flags; undefined when none were given. */
