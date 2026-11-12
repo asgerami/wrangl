@@ -9,6 +9,8 @@ While the project is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-12
+
 ### Added
 
 - **Discovery mode for large APIs.** `--discovery` on `generate`, `install`,
@@ -38,12 +40,21 @@ While the project is pre-1.0, minor versions may include breaking changes.
   without a valid token with a 401 challenge pointing at it, and accepts only
   JWTs signed by the provider for that server's URL. `--oauth-scope` requires
   scopes (403 otherwise) and `--oauth-audience` accepts a shared audience.
-  The static per-server token keeps working.
+  The static per-server token keeps working. Tested end to end as a
+  claude.ai connector with Keycloak; the guide has the setup. ChatGPT
+  connectors use the same flow but haven't been tested yet.
 - **Official MCP Registry listing.** `server.json` describes Wrangl for
   [registry.modelcontextprotocol.io](https://registry.modelcontextprotocol.io)
   as `io.github.asgerami/wrangl`, and `package.json` carries the matching
   `mcpName` the registry verifies. Releases publish the listing automatically
   via GitHub OIDC, and `npm version` keeps its version in step.
+
+### Security
+
+- **Updated `@hono/node-server` to 2.1.5** for
+  [GHSA-rmxm-3fg6-px4f](https://github.com/advisories/GHSA-rmxm-3fg6-px4f)
+  (moderate). The MCP SDK's HTTP transport depends on it; Wrangl doesn't use
+  the affected `serveStatic` API.
 
 ## [0.5.0] - 2026-10-28
 
@@ -297,7 +308,8 @@ First public release. Wrangl turns any REST API into an agent-ready MCP server.
 - **Deployment.** Docker image and Compose files, Caddy TLS, admin token,
   per-server tokens and rate limits, and a Postgres backend for multiple replicas.
 
-[Unreleased]: https://github.com/asgerami/wrangl/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/asgerami/wrangl/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/asgerami/wrangl/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/asgerami/wrangl/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/asgerami/wrangl/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/asgerami/wrangl/compare/v0.3.0...v0.4.0
