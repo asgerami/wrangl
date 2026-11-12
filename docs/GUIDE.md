@@ -542,6 +542,33 @@ for it are then accepted on every hosted server, so scope them with
 In Claude, add the connector with the server's full MCP URL and, under
 advanced settings, the client ID and secret you registered.
 
+**Example: Keycloak.** This setup has been tested as a claude.ai connector.
+In a realm (here `wrangl`):
+
+1. Create a client scope named `mcp:tools` (type *Default*, *Include in token
+   scope* on). Under its mappers, add an *Audience* mapper with *Included
+   Custom Audience* set to the server's MCP URL, for example
+   `https://mcp.example.com/servers/petstore/mcp`, and *Add to access token*
+   on. Add one mapper per hosted server the connector should reach.
+2. Create a client, for example `wrangl-claude`, with *Client
+   authentication* on and the *Standard flow*. Set the valid redirect URI to
+   `https://claude.ai/api/mcp/auth_callback` and, under advanced settings,
+   the PKCE method to `S256`. Add `mcp:tools` to its client scopes as
+   *Default*, and copy the secret from the *Credentials* tab.
+3. Start Wrangl with the realm as the issuer:
+
+   ```bash
+   wrangl serve --public-url https://mcp.example.com \
+     --oauth-issuer https://keycloak.example.com/realms/wrangl \
+     --oauth-scope mcp:tools
+   ```
+
+Keycloak behind a proxy must know its public address
+(`KC_HOSTNAME=https://keycloak.example.com`), or the issuer in its tokens
+won't match the one Wrangl looked up. Claude's servers call the token
+endpoint directly, so Keycloak has to be reachable from the internet, not
+only from your browser.
+
 Connectors need a public HTTPS URL, so set `--public-url` to the address they
 reach Wrangl at; `serve` warns when sign-in is on and that URL isn't HTTPS.
 Access tokens must be JWTs: providers that only issue opaque tokens aren't
